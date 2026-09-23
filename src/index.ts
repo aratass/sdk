@@ -14,6 +14,7 @@ export {
   normalizeWalletError,
   withNormalizedWalletErrors,
   assertWalletNetwork,
+  watchWalletEvents,
 } from './wallet';
 export type {
   WalletAdapterChain,
@@ -25,6 +26,12 @@ export type {
   FreighterWalletApi,
   ViemWalletClient,
   SolanaWalletAdapterLike,
+  WalletEvent,
+  WalletEventListener,
+  WalletEventSource,
+  Eip1193EventProvider,
+  SolanaWalletEventEmitter,
+  FreighterWalletWatcher,
 } from './wallet';
 
 export { setTracer, getTracer, withSpan, NOOP_TRACER } from './telemetry';

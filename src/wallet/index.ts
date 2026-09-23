@@ -15,3 +15,12 @@ export { SolanaWalletAdapter, createSolanaWalletAdapter } from './adapters/solan
 export type { SolanaWalletAdapterLike } from './adapters/solana';
 export { normalizeWalletError, withNormalizedWalletErrors } from './errors';
 export { assertWalletNetwork } from './network';
+export { watchWalletEvents } from './events';
+export type {
+  WalletEvent,
+  WalletEventListener,
+  WalletEventSource,
+  Eip1193EventProvider,
+  SolanaWalletEventEmitter,
+  FreighterWalletWatcher,
+} from './events';
