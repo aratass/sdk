@@ -53,6 +53,41 @@ export abstract class WraithNetworkError extends WraithError {}
 export abstract class WraithContractError extends WraithError {}
 export abstract class WraithBuilderError extends WraithError {}
 
+/** Details shared by every {@link WraithWalletError}. */
+export interface WalletErrorDetails {
+  /** Wallet adapter chain family the failure came from: `'evm'`, `'solana'` or `'stellar'`. */
+  chain?: string;
+  /** Human-readable detail: the provider's own message, or the SDK's when it found the problem. */
+  reason?: string;
+  /** The provider error code or error name that identified the failure, e.g. `4001`. */
+  providerCode?: number | string;
+  /** The original provider error. Exposed as `error.cause` and left out of `toJSON()`. */
+  cause?: unknown;
+}
+
+/** Details for {@link WalletWrongNetworkError}. */
+export interface WalletWrongNetworkDetails extends WalletErrorDetails {
+  /** Network the app expected, e.g. `'eip155:1'` or a Stellar network passphrase. */
+  expectedNetwork?: string;
+  /** Network the wallet reported. */
+  actualNetwork?: string;
+}
+
+/**
+ * Base class for wallet failures. `normalizeWalletError()` maps the errors that
+ * viem, Solana wallet-adapter and Freighter wallets produce onto its subclasses.
+ */
+export abstract class WraithWalletError extends WraithError {
+  constructor(message: string, details: WalletErrorDetails = {}, extra?: Record<string, unknown>) {
+    const { chain, reason, providerCode, cause } = details;
+    super(message, { chain, reason, providerCode, ...extra });
+    if (cause !== undefined) {
+      // Same semantics as a native `Error.cause`: readable, but not enumerable or serialised.
+      Object.defineProperty(this, 'cause', { value: cause, writable: true, configurable: true });
+    }
+  }
+}
+
 // WraithInputError Subclasses
 export class InvalidMetaAddressError extends WraithInputError {
   readonly code = 'WRAITH/INPUT/INVALID_META_ADDRESS';
@@ -382,6 +417,113 @@ export class UnsupportedAssetError extends WraithBuilderError {
       `"${asset}" isn't supported${chain ? ` on ${chain}` : ''} by this SDK build. Try: check the ` +
       `supported asset list for this chain, or register the asset if the SDK exposes a way to. ` +
       `See ${this.docsLink}.`
+    );
+  }
+}
+
+// WraithWalletError Subclasses
+function walletMessage(summary: string, { chain, reason }: WalletErrorDetails): string {
+  return `${summary}${chain ? ` (${chain})` : ''}${reason ? `: ${reason}` : ''}`;
+}
+
+function walletLabel(chain: unknown): string {
+  return typeof chain === 'string' && chain ? `${chain} wallet` : 'wallet';
+}
+
+/** The wallet is not connected, is locked, has not authorised this site, or disconnected. */
+export class WalletNotConnectedError extends WraithWalletError {
+  readonly code = 'WRAITH/WALLET/NOT_CONNECTED';
+
+  constructor(details: WalletErrorDetails = {}) {
+    super(walletMessage('Wallet is not connected', details), details);
+  }
+
+  describe(): string {
+    const { chain } = this.context ?? {};
+    return (
+      `The ${walletLabel(chain)} isn't connected, or it disconnected. Try: ask the user to connect ` +
+      `or unlock the wallet and approve access for this site, then retry. See ${this.docsLink}.`
+    );
+  }
+}
+
+/** The user declined the wallet request or closed the wallet window. */
+export class WalletUserRejectedError extends WraithWalletError {
+  readonly code = 'WRAITH/WALLET/USER_REJECTED';
+
+  constructor(details: WalletErrorDetails = {}) {
+    super(walletMessage('The user rejected the wallet request', details), details);
+  }
+
+  describe(): string {
+    const { chain } = this.context ?? {};
+    return (
+      `The user declined the request in their ${walletLabel(chain)}. Try: don't retry ` +
+      `automatically; let the user start the request again when they're ready. See ${this.docsLink}.`
+    );
+  }
+}
+
+/** The wallet is on another network than the request needs, or does not know the chain. */
+export class WalletWrongNetworkError extends WraithWalletError {
+  readonly code = 'WRAITH/WALLET/WRONG_NETWORK';
+
+  constructor(details: WalletWrongNetworkDetails = {}) {
+    const { expectedNetwork, actualNetwork, ...rest } = details;
+    const mismatch =
+      expectedNetwork !== undefined || actualNetwork !== undefined
+        ? `expected "${expectedNetwork ?? 'unknown'}", got "${actualNetwork ?? 'unknown'}"`
+        : undefined;
+    super(
+      walletMessage('Wallet is on the wrong network', { ...rest, reason: rest.reason ?? mismatch }),
+      rest,
+      { expectedNetwork, actualNetwork },
+    );
+  }
+
+  describe(): string {
+    const { chain, expectedNetwork, actualNetwork } = this.context ?? {};
+    const current = actualNetwork ? `is on "${actualNetwork}"` : 'is on a different network';
+    const needed = expectedNetwork ? ` but this request needs "${expectedNetwork}"` : '';
+    return (
+      `The ${walletLabel(chain)} ${current}${needed}. Try: ask the user to switch networks in the ` +
+      `wallet (EVM wallets accept wallet_switchEthereumChain), then retry. See ${this.docsLink}.`
+    );
+  }
+}
+
+/** No usable wallet: not installed, not ready here, or unable to perform the operation. */
+export class WalletUnavailableError extends WraithWalletError {
+  readonly code = 'WRAITH/WALLET/UNAVAILABLE';
+
+  constructor(details: WalletErrorDetails = {}) {
+    super(walletMessage('Wallet is not available', details), details);
+  }
+
+  describe(): string {
+    const { chain } = this.context ?? {};
+    return (
+      `No usable ${walletLabel(chain)} was found: it isn't installed, isn't ready in this ` +
+      `environment, or doesn't support this operation. Try: prompt the user to install or enable ` +
+      `the wallet, or pick one that supports message signing. See ${this.docsLink}.`
+    );
+  }
+}
+
+/** A wallet failure that fits no other category; the provider's code and error are kept. */
+export class WalletRequestFailedError extends WraithWalletError {
+  readonly code = 'WRAITH/WALLET/REQUEST_FAILED';
+
+  constructor(details: WalletErrorDetails = {}) {
+    super(walletMessage('The wallet request failed', details), details);
+  }
+
+  describe(): string {
+    const { chain, reason } = this.context ?? {};
+    return (
+      `The ${walletLabel(chain)} failed with an error the SDK doesn't classify` +
+      `${reason ? ` (${reason})` : ''}. Try: retry once; if it keeps failing, inspect error.cause ` +
+      `for the provider's original error. See ${this.docsLink}.`
     );
   }
 }

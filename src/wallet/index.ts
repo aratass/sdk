@@ -13,3 +13,5 @@ export { ViemWalletAdapter, createViemWalletAdapter } from './adapters/viem';
 export type { ViemWalletClient } from './adapters/viem';
 export { SolanaWalletAdapter, createSolanaWalletAdapter } from './adapters/solana';
 export type { SolanaWalletAdapterLike } from './adapters/solana';
+export { normalizeWalletError, withNormalizedWalletErrors } from './errors';
+export { assertWalletNetwork } from './network';

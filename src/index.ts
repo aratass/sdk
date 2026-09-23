@@ -11,6 +11,9 @@ export {
   createViemWalletAdapter,
   SolanaWalletAdapter,
   createSolanaWalletAdapter,
+  normalizeWalletError,
+  withNormalizedWalletErrors,
+  assertWalletNetwork,
 } from './wallet';
 export type {
   WalletAdapterChain,
@@ -61,4 +64,11 @@ export {
   ContractRevertError,
   InsufficientBalanceError,
   UnsupportedAssetError,
+  WraithWalletError,
+  WalletNotConnectedError,
+  WalletUserRejectedError,
+  WalletWrongNetworkError,
+  WalletUnavailableError,
+  WalletRequestFailedError,
 } from './errors';
+export type { WalletErrorDetails, WalletWrongNetworkDetails } from './errors';
