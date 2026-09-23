@@ -57,6 +57,34 @@ export interface AssetMetadata {
 }
 
 // @public
+export interface AssetMetadataFailure {
+    field: AssetMetadataField;
+    message: string;
+    reason: AssetMetadataFailureReason;
+}
+
+// @public
+export type AssetMetadataFailureReason = 'missing' | 'invalid' | 'rpc-error';
+
+// @public
+export type AssetMetadataField = 'name' | 'symbol' | 'decimals';
+
+// @public
+export type AssetMetadataResult = {
+    status: 'complete';
+    metadata: AssetMetadata;
+    failures: readonly AssetMetadataFailure[];
+} | {
+    status: 'partial';
+    metadata: Partial<AssetMetadata>;
+    failures: readonly AssetMetadataFailure[];
+} | {
+    status: 'unsupported';
+    metadata: Partial<AssetMetadata>;
+    failures: readonly AssetMetadataFailure[];
+};
+
+// @public
 export interface AssetReceivabilityResult {
     hasTrustline: boolean;
     issuerAuthRequired: boolean;
@@ -378,6 +406,9 @@ export interface GetAssetMetadataOptions {
     bypassCache?: boolean;
     rpcUrl?: string;
 }
+
+// @public
+export function getAssetMetadataResult(contractId: string, network?: Network, opts?: GetAssetMetadataOptions): Promise<AssetMetadataResult>;
 
 // @public
 export function getDeployment(chain: string): StellarChainDeployment;
