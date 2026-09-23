@@ -27,6 +27,16 @@ import { adapter as ckbAdapter } from '../chains/ckb/scan';
 export type SupportedChain = 'evm' | 'stellar' | 'solana' | 'ckb';
 
 /**
+ * Timestamp used when a scanner adapter cannot supply a real chain time.
+ *
+ * `scanAll` sorts nothing, it interleaves as results arrive, so this value is not
+ * an ordering key. It is the documented "unknown" marker on
+ * {@link MatchedAnnouncement.timestamp}: callers that sort or bucket by time
+ * should treat it as absent rather than as the Unix epoch.
+ */
+export const UNKNOWN_TIMESTAMP = 0;
+
+/**
  * Interface that all chain scanner adapters must implement for third-party chain extensibility.
  *
  * @template TItem - Raw announcement/cell item type.
@@ -60,6 +70,28 @@ export interface ChainScannerAdapter<TItem = any, TKeys = any, TMatched = any, T
    * @param viewingPubKey - Public key used for viewing/ECDH derivation.
    */
   encodeMetaAddress(spendingPubKey: any, viewingPubKey: any): string;
+
+  /**
+   * Returns the chain time of a matched result, in whole seconds since the Unix
+   * epoch.
+   *
+   * This is the timestamp contract for third-party adapters. Implement it when
+   * the chain exposes a block, ledger or slot time, and `scanAll` will carry the
+   * value through on {@link MatchedAnnouncement.timestamp}.
+   *
+   * Return `undefined` for a match whose time is genuinely unknown. Anything
+   * that is not a finite, non-negative number is treated the same way, so a
+   * partial implementation degrades instead of emitting `NaN` downstream.
+   *
+   * Adapters that already carry a numeric `timestamp` on the matched value do
+   * not need this method: `scanAll` reads that field as a fallback. When both
+   * are present, this method wins.
+   *
+   * Omitting it entirely is supported. Every match then reports
+   * {@link UNKNOWN_TIMESTAMP}, which is the behaviour every adapter had before
+   * this contract existed.
+   */
+  timestampOf?(matched: TMatched): number | undefined;
 }
 
 /**
@@ -142,6 +174,47 @@ export type MatchedAnnouncement =
       announcement: any;
     };
 
+/**
+ * Narrows an adapter-supplied timestamp to a usable chain time.
+ *
+ * Accepts only finite, non-negative numbers. `NaN`, `Infinity`, negative values
+ * and non-numbers all collapse to `undefined` so a malformed adapter cannot put
+ * a poisoned value on a matched announcement.
+ */
+function coerceTimestamp(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Resolves the timestamp for one matched result.
+ *
+ * Order is deliberate: an explicit `timestampOf` beats a field on the value,
+ * because the adapter author opted into the contract. A throwing `timestampOf`
+ * must not abort a scan that is otherwise fine, so it degrades to the fallback.
+ */
+function resolveTimestamp(
+  adapter: ChainScannerAdapter<any, any, any, any>,
+  matched: unknown,
+): number {
+  if (typeof adapter.timestampOf === 'function') {
+    let reported: unknown;
+    try {
+      reported = adapter.timestampOf(matched);
+    } catch {
+      reported = undefined;
+    }
+    const fromMethod = coerceTimestamp(reported);
+    if (fromMethod !== undefined) return fromMethod;
+  }
+
+  if (matched !== null && typeof matched === 'object' && 'timestamp' in matched) {
+    const fromField = coerceTimestamp((matched as { timestamp?: unknown }).timestamp);
+    if (fromField !== undefined) return fromField;
+  }
+
+  return UNKNOWN_TIMESTAMP;
+}
+
 async function* scanChainAdapterSource(
   adapter: ChainScannerAdapter<any, any, any, any>,
   source: AsyncIterable<any>,
@@ -153,7 +226,7 @@ async function* scanChainAdapterSource(
     while (true) {
       const next = await it.next();
       if (next.done) break;
-      yield { announcement: next.value, timestamp: 0 };
+      yield { announcement: next.value, timestamp: resolveTimestamp(adapter, next.value) };
     }
   } finally {
     await it.return?.(undefined);

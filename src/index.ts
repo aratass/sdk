@@ -2,7 +2,7 @@
  * @internal
  */
 export { installReactNativePolyfills } from './compat';
-export { scanAll } from './scanner/unified';
+export { scanAll, UNKNOWN_TIMESTAMP } from './scanner/unified';
 export {
   deriveStealthKeysFromWallet,
   FreighterWalletAdapter,
