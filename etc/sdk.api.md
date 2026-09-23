@@ -20,6 +20,7 @@ export interface ChainScannerAdapter<TItem = any, TKeys = any, TMatched = any, T
     encodeMetaAddress(spendingPubKey: any, viewingPubKey: any): string;
     id: string;
     scan(source: AsyncIterable<TItem>, keys: TKeys): AsyncGenerator<TMatched>;
+    timestampOf?(matched: TMatched): number | undefined;
 }
 
 // @public (undocumented)
@@ -377,6 +378,9 @@ export interface Tracer {
     startSpan(name: string, attributes?: Record<string, string | number | boolean>): Span;
 }
 
+// @public
+export const UNKNOWN_TIMESTAMP = 0;
+
 // @public (undocumented)
 export class UnsupportedAssetError extends WraithBuilderError {
     constructor(asset: string, chain?: string);
@@ -476,10 +480,10 @@ export abstract class WraithNetworkError extends WraithError {
 
 // Warnings were encountered during analysis:
 //
-// dist/unified-DfldjjAV.d.ts:136:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement_2" needs to be exported by the entry point index.d.ts
-// dist/unified-DfldjjAV.d.ts:141:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement$1" needs to be exported by the entry point index.d.ts
-// dist/unified-DfldjjAV.d.ts:146:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement_3" needs to be exported by the entry point index.d.ts
-// dist/unified-DfldjjAV.d.ts:151:5 - (ae-forgotten-export) The symbol "MatchedStealthCell" needs to be exported by the entry point index.d.ts
+// dist/unified-CssjVK0G.d.ts:166:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement_2" needs to be exported by the entry point index.d.ts
+// dist/unified-CssjVK0G.d.ts:171:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement$1" needs to be exported by the entry point index.d.ts
+// dist/unified-CssjVK0G.d.ts:176:5 - (ae-forgotten-export) The symbol "MatchedAnnouncement_3" needs to be exported by the entry point index.d.ts
+// dist/unified-CssjVK0G.d.ts:181:5 - (ae-forgotten-export) The symbol "MatchedStealthCell" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 
