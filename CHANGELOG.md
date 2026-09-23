@@ -16,6 +16,12 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
   - `scanAnnouncementsStream` is now exported from `@wraith-protocol/sdk/chains/stellar` (it previously wasn't part of the public API surface, only reachable via a relative import).
   - Reference `@opentelemetry/api`-shaped adapter under `examples/otel/`; stable attribute names documented in `docs/observability.md`.
 - **Package Entry Point Smoke Tests** (issue #205): a dedicated CI job builds the package and imports every `exports` subpath through both its ESM and CommonJS conditions, verifies each entry point's TypeScript declarations resolve, and asserts no entry point's authored source imports a Node-only builtin. Fixtures live in `test/smoke/` and run via `pnpm test:exports` across the supported Node versions.
+- **Wallet Adapter Error Taxonomy, Events and Conformance Tests** (issue #214): viem, Solana wallet-adapter and Freighter failures now map onto one error family, and their account and network changes onto one event shape.
+  - `WraithWalletError` and its subclasses `WalletNotConnectedError`, `WalletUserRejectedError`, `WalletWrongNetworkError`, `WalletUnavailableError` and `WalletRequestFailedError`, exported from the package root.
+  - `normalizeWalletError()` maps EIP-1193 and viem errors, Solana wallet-adapter errors and Freighter error results onto the taxonomy, keeping the original on `cause`. `withNormalizedWalletErrors()` wraps an adapter so its methods reject with normalised errors.
+  - `watchWalletEvents()` reports `accountChanged`, `networkChanged` and `disconnect` events from an EIP-1193 provider, an `@solana/wallet-adapter` adapter or Freighter's `WatchWalletChanges`.
+  - `ViemWalletAdapter.getNetwork()`, `FreighterWalletAdapter.getNetwork()` and `assertWalletNetwork()` for wrong-network checks.
+  - Opt-in and backward compatible: the adapters' `signMessage()` and `getAddress()` throw the same errors as before. See [`docs/wallet-adapters.md`](./docs/wallet-adapters.md).
 
 ### Performance
 

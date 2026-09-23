@@ -8,7 +8,7 @@ All custom errors extend a base `WraithError` class, which extends the native Ja
 
 ## The Error Hierarchy
 
-All custom exceptions are organized under five major categories:
+All custom exceptions are organized under six major categories:
 
 ```
 WraithError (Abstract Base)
@@ -30,9 +30,15 @@ WraithError (Abstract Base)
 │   ├── NameAlreadyRegisteredError
 │   ├── InsufficientAuthError
 │   └── ContractRevertError
-└── WraithBuilderError
-    ├── InsufficientBalanceError
-    └── UnsupportedAssetError
+├── WraithBuilderError
+│   ├── InsufficientBalanceError
+│   └── UnsupportedAssetError
+└── WraithWalletError
+    ├── WalletNotConnectedError
+    ├── WalletUserRejectedError
+    ├── WalletWrongNetworkError
+    ├── WalletUnavailableError
+    └── WalletRequestFailedError
 ```
 
 ---
@@ -96,6 +102,18 @@ Thrown during local transaction preparation before submission.
 | :------------------------- | :-------------------------------------- | :---------------------------- | :----------------------------------------------------------------------------------------- |
 | `InsufficientBalanceError` | `"WRAITH/BUILDER/INSUFFICIENT_BALANCE"` | `required`, `actual`, `asset` | Thrown when the local wallet balance is insufficient to pay for private transfers or fees. |
 | `UnsupportedAssetError`    | `"WRAITH/BUILDER/UNSUPPORTED_ASSET"`    | `asset`, `chain`              | Thrown when trying to build transactions for an asset or chain not supported by the SDK.   |
+
+### 6. Wallet Errors (`WraithWalletError`)
+
+Produced by `normalizeWalletError()`, `withNormalizedWalletErrors()`, `assertWalletNetwork()` and the wallet adapters' `getNetwork()`. They give viem, Solana wallet-adapter and Freighter failures one set of classes; the provider's original error is kept on `cause`. See [wallet-adapters.md](./wallet-adapters.md) for how each provider's errors map onto them.
+
+| Error Class                | Stable Code                      | Context Fields                                                        | Description                                                                                         |
+| :------------------------- | :------------------------------- | :-------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| `WalletNotConnectedError`  | `"WRAITH/WALLET/NOT_CONNECTED"`  | `chain`, `reason`, `providerCode`                                     | The wallet is not connected, is locked, has not authorised the site, or disconnected.               |
+| `WalletUserRejectedError`  | `"WRAITH/WALLET/USER_REJECTED"`  | `chain`, `reason`, `providerCode`                                     | The user declined the request or closed the wallet window.                                          |
+| `WalletWrongNetworkError`  | `"WRAITH/WALLET/WRONG_NETWORK"`  | `chain`, `reason`, `providerCode`, `expectedNetwork`, `actualNetwork` | The wallet is on a different network than the request needs, or does not know the requested chain.  |
+| `WalletUnavailableError`   | `"WRAITH/WALLET/UNAVAILABLE"`    | `chain`, `reason`, `providerCode`                                     | No usable wallet: not installed, not ready in this environment, or unable to perform the operation. |
+| `WalletRequestFailedError` | `"WRAITH/WALLET/REQUEST_FAILED"` | `chain`, `reason`, `providerCode`                                     | Any other wallet failure. The provider's code and message are kept for inspection.                  |
 
 ---
 
