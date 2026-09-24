@@ -9,6 +9,7 @@ import {
   type SorobanEventFilter,
 } from './event-filters';
 import { Address, xdr } from '@stellar/stellar-sdk';
+import { linkedAbortController, throwIfAborted } from './abort';
 
 export interface FetchAnnouncementsOptions {
   /** Earliest ledger to include, inclusive. Ignored when cursor is provided. */
@@ -38,6 +39,14 @@ export interface FetchAnnouncementsOptions {
    * Default: 1 (sequential). Ignored when cursor is provided.
    */
   parallelism?: number;
+  /**
+   * Cancels the stream. Aborting cancels in-flight Soroban RPC and Horizon requests
+   * (including every parallel chunk), stops pagination, closes the iterator and drops any
+   * page it was still holding. The pending or next `next()` call rejects with
+   * `signal.reason`: a `DOMException` named `AbortError` unless a reason was passed to
+   * `abort()`. A signal that is already aborted rejects before any request is sent.
+   */
+  signal?: AbortSignal;
 }
 
 export class RetentionExceededError extends Error {
@@ -70,6 +79,7 @@ async function* fetchAnnouncementsRange(
   startLedger: number,
   toLedger: number | undefined,
   seen: Set<string>,
+  signal?: AbortSignal,
 ): AsyncGenerator<{ announcement: Announcement; ledger: number }> {
   const singleFilterGroup = filterGroups.length === 1;
 
@@ -78,6 +88,7 @@ async function* fetchAnnouncementsRange(
     let groupCursor: string | undefined = undefined;
 
     while (hasMore) {
+      throwIfAborted(signal);
       const params: Record<string, unknown> = {
         filters,
         pagination: groupCursor ? { limit: 1000, cursor: groupCursor } : { limit: 1000 },
@@ -96,6 +107,7 @@ async function* fetchAnnouncementsRange(
           method: 'getEvents',
           params,
         }),
+        signal,
       });
 
       const data = await res.json();
@@ -124,6 +136,9 @@ async function* fetchAnnouncementsRange(
         const ann = parseAnnouncementEvent(event);
         if (ann && ledger !== undefined) {
           yield { announcement: ann, ledger };
+          // The consumer may have aborted while holding this item: stop instead of
+          // draining the rest of the page.
+          throwIfAborted(signal);
         }
       }
 
@@ -147,29 +162,37 @@ export async function* mergeOrdered<T>(
   const iterators = iterables.map((it) => it[Symbol.asyncIterator]());
   const pending: Array<{ value: T; key: number; index: number }> = [];
 
-  // Initialize: pull first item from each iterator
-  for (let i = 0; i < iterators.length; i++) {
-    const result = await iterators[i].next();
-    if (!result.done) {
-      pending.push({ value: result.value.item, key: result.value.key, index: i });
-    }
-  }
-
-  while (pending.length > 0) {
-    // Find the item with the smallest key
-    pending.sort((a, b) => a.key - b.key || a.index - b.index);
-    const [next, ...rest] = pending;
-
-    yield next.value;
-
-    // Pull the next item from the iterator that just yielded
-    const result = await iterators[next.index].next();
-    if (!result.done) {
-      rest.push({ value: result.value.item, key: result.value.key, index: next.index });
+  try {
+    // Initialize: pull first item from each iterator
+    for (let i = 0; i < iterators.length; i++) {
+      const result = await iterators[i].next();
+      if (!result.done) {
+        pending.push({ value: result.value.item, key: result.value.key, index: i });
+      }
     }
 
+    while (pending.length > 0) {
+      // Find the item with the smallest key
+      pending.sort((a, b) => a.key - b.key || a.index - b.index);
+      const [next, ...rest] = pending;
+
+      yield next.value;
+
+      // Pull the next item from the iterator that just yielded
+      const result = await iterators[next.index].next();
+      if (!result.done) {
+        rest.push({ value: result.value.item, key: result.value.key, index: next.index });
+      }
+
+      pending.length = 0;
+      pending.push(...rest);
+    }
+  } finally {
+    // Whether the merge finished, failed or was stopped early, close every source so no
+    // chunk keeps its page alive after the consumer is gone. Errors from closing are
+    // ignored so they cannot mask the error that ended the merge.
     pending.length = 0;
-    pending.push(...rest);
+    await Promise.allSettled(iterators.map(async (it) => it.return?.()));
   }
 }
 
@@ -205,7 +228,9 @@ export function splitRange(
  * Streaming version of announcement fetching. Yields announcements page by page
  * from the Soroban RPC as they arrive, never holding more than one page in memory.
  *
- * Cancellation is automatic: breaking out of the `for-await` loop stops the stream.
+ * Cancellation: breaking out of the `for-await` loop stops the stream. To cancel from
+ * outside the loop, including while a request is in flight, pass `signal` in the options
+ * (see {@link FetchAnnouncementsOptions.signal}).
  *
  * @param chain The chain identifier (default: "stellar").
  * @param sorobanUrlOrOpts Optional override for the Soroban RPC URL, or FetchAnnouncementsOptions.
@@ -216,8 +241,11 @@ export async function* fetchAnnouncementsStream(
   sorobanUrlOrOpts?: string | FetchAnnouncementsOptions,
   maybeOpts?: FetchAnnouncementsOptions,
 ): AsyncGenerator<Announcement> {
-  const deployment = getDeployment(chain);
   const opts = typeof sorobanUrlOrOpts === 'object' ? sorobanUrlOrOpts : maybeOpts;
+  const signal = opts?.signal;
+  throwIfAborted(signal);
+
+  const deployment = getDeployment(chain);
   const sorobanUrl =
     (typeof sorobanUrlOrOpts === 'string' ? sorobanUrlOrOpts : opts?.sorobanUrl) ||
     deployment.sorobanUrl;
@@ -233,17 +261,17 @@ export async function* fetchAnnouncementsStream(
     throw new Error('toLedger and toTimestamp are mutually exclusive');
   }
 
-  const ledgerWindow = await getSorobanLedgerWindow(sorobanUrl, announcerContract);
-  const latestLedger = ledgerWindow.latest ?? (await getLatestLedger(sorobanUrl));
+  const ledgerWindow = await getSorobanLedgerWindow(sorobanUrl, announcerContract, signal);
+  const latestLedger = ledgerWindow.latest ?? (await getLatestLedger(sorobanUrl, signal));
   let startLedger =
     opts?.fromLedger ?? Math.max(ledgerWindow.oldest ?? 1, latestLedger ? latestLedger - 5000 : 1);
   let toLedger = opts?.toLedger ?? latestLedger;
 
   if (opts?.fromTimestamp) {
-    startLedger = await ledgerForTimestamp(deployment.horizonUrl, opts.fromTimestamp);
+    startLedger = await ledgerForTimestamp(deployment.horizonUrl, opts.fromTimestamp, signal);
   }
   if (opts?.toTimestamp) {
-    toLedger = await ledgerForTimestamp(deployment.horizonUrl, opts.toTimestamp);
+    toLedger = await ledgerForTimestamp(deployment.horizonUrl, opts.toTimestamp, signal);
   }
 
   if (!opts?.cursor && ledgerWindow.oldest !== undefined && startLedger < ledgerWindow.oldest) {
@@ -255,23 +283,33 @@ export async function* fetchAnnouncementsStream(
   if (!opts?.cursor && parallelism > 1 && toLedger !== undefined) {
     const seen = new Set<string>();
     const chunks = splitRange(startLedger, toLedger, parallelism);
+    // One signal shared by every chunk. It aborts when the caller's signal does, and in the
+    // `finally` below when the merge ends for any other reason (the consumer stopped early,
+    // or a chunk failed), so no chunk request outlives the stream.
+    const chunkAbort = linkedAbortController(signal);
 
-    const chunkIterables = chunks.map((chunk) => {
-      return (async function* () {
-        for await (const result of fetchAnnouncementsRange(
-          sorobanUrl,
-          announcerContract,
-          filterGroups,
-          chunk.startLedger,
-          chunk.endLedger,
-          seen,
-        )) {
-          yield { item: result.announcement, key: result.ledger };
-        }
-      })();
-    });
+    try {
+      const chunkIterables = chunks.map((chunk) => {
+        return (async function* () {
+          for await (const result of fetchAnnouncementsRange(
+            sorobanUrl,
+            announcerContract,
+            filterGroups,
+            chunk.startLedger,
+            chunk.endLedger,
+            seen,
+            chunkAbort.signal,
+          )) {
+            yield { item: result.announcement, key: result.ledger };
+          }
+        })();
+      });
 
-    yield* mergeOrdered(chunkIterables);
+      yield* mergeOrdered(chunkIterables);
+    } finally {
+      chunkAbort.dispose();
+      seen.clear();
+    }
     return;
   }
 
@@ -285,6 +323,7 @@ export async function* fetchAnnouncementsStream(
     let groupCursor = singleFilterGroup ? cursor : undefined;
 
     while (hasMore) {
+      throwIfAborted(signal);
       const params: Record<string, unknown> = {
         filters,
         pagination: groupCursor ? { limit: 1000, cursor: groupCursor } : { limit: 1000 },
@@ -303,6 +342,7 @@ export async function* fetchAnnouncementsStream(
           method: 'getEvents',
           params,
         }),
+        signal,
       });
 
       const data = await res.json();
@@ -330,7 +370,12 @@ export async function* fetchAnnouncementsStream(
         seen.add(dedupeKey);
 
         const ann = parseAnnouncementEvent(event);
-        if (ann) yield ann;
+        if (ann) {
+          yield ann;
+          // The consumer may have aborted while holding this item: stop instead of
+          // draining the rest of the page.
+          throwIfAborted(signal);
+        }
       }
 
       if (!hasMore || events.length < 1000) {
@@ -346,6 +391,7 @@ export async function* fetchAnnouncementsStream(
 async function getSorobanLedgerWindow(
   sorobanUrl: string,
   announcerContract: string,
+  signal?: AbortSignal,
 ): Promise<{ oldest?: number; latest?: number }> {
   const probeRes = await fetch(sorobanUrl, {
     method: 'POST',
@@ -360,6 +406,7 @@ async function getSorobanLedgerWindow(
         pagination: { limit: 1 },
       },
     }),
+    signal,
   });
 
   const probeData = await probeRes.json();
@@ -369,25 +416,33 @@ async function getSorobanLedgerWindow(
   return {};
 }
 
-async function getLatestLedger(sorobanUrl: string): Promise<number | undefined> {
+async function getLatestLedger(
+  sorobanUrl: string,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
   const res = await fetch(sorobanUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestLedger' }),
+    signal,
   });
   const data = await res.json();
   return data.result?.sequence;
 }
 
-async function ledgerForTimestamp(horizonUrl: string, timestamp: Date): Promise<number> {
-  const latest = await horizonLedger(horizonUrl, 'latest');
+async function ledgerForTimestamp(
+  horizonUrl: string,
+  timestamp: Date,
+  signal?: AbortSignal,
+): Promise<number> {
+  const latest = await horizonLedger(horizonUrl, 'latest', signal);
   let low = 1;
   let high = latest.sequence;
   let answer = latest.sequence + 1;
 
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
-    const ledger = await horizonLedger(horizonUrl, mid);
+    const ledger = await horizonLedger(horizonUrl, mid, signal);
     const closedAt = Date.parse(ledger.closed_at);
 
     if (closedAt >= timestamp.getTime()) {
@@ -404,12 +459,13 @@ async function ledgerForTimestamp(horizonUrl: string, timestamp: Date): Promise<
 async function horizonLedger(
   horizonUrl: string,
   sequence: number | 'latest',
+  signal?: AbortSignal,
 ): Promise<{ sequence: number; closed_at: string }> {
   const path =
     sequence === 'latest'
       ? '/ledgers?order=desc&limit=1'
       : `/ledgers/${encodeURIComponent(sequence)}`;
-  const res = await fetch(`${horizonUrl}${path}`);
+  const res = await fetch(`${horizonUrl}${path}`, { signal });
   const data = await res.json();
   if (sequence === 'latest') {
     return data._embedded.records[0];

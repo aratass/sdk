@@ -1,5 +1,6 @@
 import { RPCRequestError, RPCRetryExhaustedError } from '../../errors';
 import { withSpan, type Tracer, type Span } from '../../telemetry';
+import { abortableSleep, abortReason, throwIfAborted } from './abort';
 
 export interface RpcEndpoint {
   url: string;
@@ -22,10 +23,16 @@ export interface RpcClientConfig {
   tracer?: Tracer;
 }
 
-/** Optional per-call telemetry override for {@link RpcClient.request}. */
+/** Optional per-call options for {@link RpcClient.request}. */
 export interface RpcRequestOptions {
   /** Overrides the client's configured tracer (and the global one) for this call only. */
   tracer?: Tracer;
+  /**
+   * Cancels the request. Aborting cancels the in-flight fetch and any retry backoff and
+   * rejects with `signal.reason`. A cancelled request never counts as an endpoint failure,
+   * so it cannot trip the circuit breaker or trigger a failover.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RpcClient {
@@ -54,10 +61,6 @@ interface EndpointState {
 }
 
 const DEFAULT_RETRYABLE_STATUSES = [429, 500, 502, 503, 504];
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function calculateDelay(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
   const exponential = baseDelayMs * 2 ** attempt;
@@ -151,7 +154,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     return withSpan(
       'stellar.rpc.request',
       { 'wraith.rpc.method': method, 'wraith.rpc.path': path },
-      (span) => requestInner<T>(method, path, body, span),
+      (span) => requestInner<T>(method, path, body, span, opts.signal),
       opts.tracer ?? clientTracer,
     );
   }
@@ -161,6 +164,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     path: string,
     body: unknown,
     span: Span,
+    signal: AbortSignal | undefined,
   ): Promise<T> {
     // Each endpoint needs at least `failureThreshold` attempts for the circuit
     // breaker to trip and trigger failover — otherwise a low maxRetries could
@@ -170,6 +174,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      throwIfAborted(signal);
       const state = states[currentIndex];
       const now = Date.now();
 
@@ -192,7 +197,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
       span.setAttribute('wraith.rpc.attempt', attempt + 1);
 
       try {
-        const init: RequestInit = { method };
+        const init: RequestInit = { method, signal };
         if (body !== undefined) {
           init.headers = { 'Content-Type': 'application/json' };
           init.body = JSON.stringify(body);
@@ -224,13 +229,17 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
           }
           lastError = new RPCRequestError(url, response.status);
           const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs);
-          await sleep(delay);
+          await abortableSleep(delay, signal);
           continue;
         }
 
         const data = await response.json().catch(() => ({}));
         throw new RPCRequestError(url, response.status, JSON.stringify(data));
       } catch (err) {
+        // A cancelled request says nothing about the endpoint's health: rethrow it
+        // before it can be counted as a failure.
+        if (signal?.aborted) throw abortReason(signal);
+
         if (
           err instanceof RPCRequestError &&
           !DEFAULT_RETRYABLE_STATUSES.includes(err.statusCode)
@@ -259,7 +268,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
         }
 
         const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs);
-        await sleep(delay);
+        await abortableSleep(delay, signal);
       }
     }
 

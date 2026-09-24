@@ -90,20 +90,27 @@ function decodeHexToBuffer(hex: string, output: Uint8Array): Uint8Array | null {
  * block which stops the pipeline, which in turn calls `.return()` on the source
  * iterator, stopping upstream I/O.
  *
+ * To cancel from outside the loop, pass `opts.signal`. Aborting it stops the scan,
+ * drops the buffered announcements, closes `source` and rejects with `signal.reason`.
+ * Give the same signal to the source (for example
+ * `fetchAnnouncementsStream('stellar', { signal })`) so its in-flight request is
+ * cancelled as well.
+ *
  * @param source  Async iterable of announcements (e.g. from {@link fetchAnnouncementsStream}).
  * @param opts.window  Max announcements buffered ahead of the scan. Smaller = less memory,
  *                     larger = more overlap between fetching and scanning. Default: 64.
+ * @param opts.signal  Optional AbortSignal that cancels the scan.
  */
 export async function* scanAnnouncementsStream(
   source: AsyncIterable<Announcement>,
   viewingKey: Uint8Array,
   spendingPubKey: Uint8Array,
   spendingScalar: bigint,
-  opts: { window?: number; tracer?: Tracer } = {},
+  opts: { window?: number; tracer?: Tracer; signal?: AbortSignal } = {},
 ): AsyncGenerator<MatchedAnnouncement> {
   const windowSize = Math.max(1, opts.window ?? 64);
   const viewingPubKey = ed25519.getPublicKey(viewingKey);
-  const piped = pipeline(source, windowSize);
+  const piped = pipeline(source, windowSize, opts.signal);
 
   const span = (opts.tracer ?? getTracer()).startSpan('stellar.scan', {
     'wraith.chain': 'stellar',

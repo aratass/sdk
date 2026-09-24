@@ -316,6 +316,7 @@ export interface FetchAnnouncementsOptions {
     includeV1?: boolean;
     includeV2?: boolean;
     parallelism?: number;
+    signal?: AbortSignal;
     sorobanUrl?: string;
     toLedger?: number;
     toTimestamp?: Date;
@@ -577,6 +578,7 @@ export interface RpcEndpoint {
 
 // @public
 export interface RpcRequestOptions {
+    signal?: AbortSignal;
     tracer?: Tracer;
 }
 
@@ -590,6 +592,7 @@ export function scanAnnouncementsLegacySharedSecretTag(announcements: Announceme
 export function scanAnnouncementsStream(source: AsyncIterable<Announcement>, viewingKey: Uint8Array, spendingPubKey: Uint8Array, spendingScalar: bigint, opts?: {
     window?: number;
     tracer?: Tracer;
+    signal?: AbortSignal;
 }): AsyncGenerator<MatchedAnnouncement>;
 
 // @public
