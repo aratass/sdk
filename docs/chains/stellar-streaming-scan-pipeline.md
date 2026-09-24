@@ -43,10 +43,37 @@ exported alongside `scanAnnouncementsStream` for benchmark comparisons, matching
 ## Cancellation and errors
 
 Breaking out of the consumer's `for-await` loop calls `.return()` on the pipeline, which
-calls `.return()` on `source` in its `finally` block — the same cancellation contract the
-old implementation had, verified by the existing `scanAnnouncementsStream` cancellation
-test. Errors thrown by `source` propagate to the consumer once any already-buffered items
-are drained.
+stops the background pump, drops the buffered items and calls `.return()` on `source` in
+its `finally` block — the same cancellation contract the old implementation had, verified
+by the existing `scanAnnouncementsStream` cancellation test. Errors thrown by `source`
+propagate to the consumer once any already-buffered items are drained.
+
+To cancel from outside the loop, pass an `AbortSignal`, ideally the same one to both ends:
+
+```ts
+const controller = new AbortController();
+const source = fetchAnnouncementsStream('stellar', { signal: controller.signal });
+
+for await (const match of scanAnnouncementsStream(source, viewKey, spendPub, spendScalar, {
+  signal: controller.signal,
+})) {
+  // ...
+}
+
+// elsewhere, e.g. when the user leaves the page:
+controller.abort();
+```
+
+Aborting cancels the in-flight Soroban RPC or Horizon request (every chunk's, for a
+parallel cold scan), stops pagination, drops buffered pages and closes both iterators. The
+pending `next()` rejects with `signal.reason`, a `DOMException` named `AbortError` unless a
+reason was passed to `abort()`. `RpcClient.request()` accepts the same `signal` option; a
+cancelled request is never counted as an endpoint failure, so it cannot trip the circuit
+breaker or cause a failover.
+
+Without the signal on the source, `.return()` still works but has to wait for a request
+that is already in flight to settle, because an async generator cannot be closed while it
+is awaiting.
 
 ## Benchmarks
 

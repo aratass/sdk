@@ -16,6 +16,11 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
   - `scanAnnouncementsStream` is now exported from `@wraith-protocol/sdk/chains/stellar` (it previously wasn't part of the public API surface, only reachable via a relative import).
   - Reference `@opentelemetry/api`-shaped adapter under `examples/otel/`; stable attribute names documented in `docs/observability.md`.
 
+- **`AbortSignal` support for Stellar announcement streams** (issue #200): `fetchAnnouncementsStream` accepts `signal` in its options, and `scanAnnouncementsStream` and `RpcClient.request()` accept it in theirs.
+  - Aborting cancels in-flight Soroban RPC and Horizon requests (for a parallel cold scan, every chunk's), stops pagination, releases buffered pages and closes the iterators. The pending `next()` rejects with `signal.reason`.
+  - An already-aborted signal rejects before any request is sent. A cancelled `RpcClient` request never counts as an endpoint failure, so it cannot trip the circuit breaker or trigger a failover, and retry backoff is cancelled too.
+  - Cancellation is documented in [`docs/chains/stellar-streaming-scan-pipeline.md`](./docs/chains/stellar-streaming-scan-pipeline.md#cancellation-and-errors).
+
 ### Performance
 
 - **Stellar Streaming Scan Pipelining** (issue #126): `scanAnnouncementsStream` now pulls its `source` through a bounded pipeline (`src/chains/stellar/scanner/pipeline.ts`) instead of prefetching a strict window before scanning it, so RPC fetches for later pages overlap with CPU work scanning earlier ones. Peak memory stays O(window). `fetchAnnouncementsStream` and `scanAnnouncementsStream`'s public shapes are unchanged; the old windowed algorithm is retained as `scanAnnouncementsStreamSequential` for benchmark comparisons. See [`docs/chains/stellar-streaming-scan-pipeline.md`](./docs/chains/stellar-streaming-scan-pipeline.md) — measured 36% wall-clock reduction on the 10k-announcement canned benchmark.
@@ -26,6 +31,11 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
   - `scanAnnouncements()` now skips candidates with zero derived scalars (cryptographically required, probability ~1 in 2^255).
   - View-tag computation optimized using ephemeralPubKey ⊕ viewingPubKey prefilter (1.5–2x faster, functionally identical).
   - See [MIGRATING.md § Stellar Audit Fixes](./MIGRATING.md#stellar-cryptographic-audit-fixes-150) for details.
+
+### Fixed
+
+- **Stellar scan pipeline could hang on early exit** (found while working on issue #200): breaking out of `scanAnnouncementsStream` (or any `pipeline()` consumer) while its read-ahead buffer was full never returned, because the background pump stayed parked waiting for space. The pump now stops when the consumer does, and the buffer no longer overfills by one item.
+- `mergeOrdered` now closes every chunk iterator when a parallel cold scan finishes, fails or is stopped early.
 
 ## [1.5.0] - 2026-05-31
 
