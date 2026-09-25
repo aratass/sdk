@@ -89,7 +89,7 @@ All cryptographic and network operations may now throw typed exceptions. Import 
 - **Base classes:** `WraithError`, `WraithInputError`, `WraithCryptoError`, `WraithNetworkError`, `WraithContractError`, `WraithBuilderError`
 - **Input validation:** `InvalidMetaAddressError`, `InvalidNameError`, `InvalidSignatureError`, `InvalidScalarError`
 - **Cryptography:** `KeyDerivationFailedError`, `ViewTagMismatchError`, `ECDHFailedError`
-- **Network:** `RPCRequestError`, `RPCRetryExhaustedError`, `RetentionExceededError`
+- **Network:** `RPCRequestError`, `RPCRetryExhaustedError`, `RPCTimeoutError`, `RetentionExceededError`
 - **Contracts:** `NameNotFoundError`, `NameAlreadyRegisteredError`, `InsufficientAuthError`, `ContractRevertError`
 - **Builders:** `InsufficientBalanceError`, `UnsupportedAssetError`
 
@@ -218,6 +218,23 @@ AppRegistry.registerComponent('MyApp', () => App);
 **If Not Using React Native:**
 
 No change needed. The polyfill function is a no-op in Node.js and browser environments.
+
+---
+
+### Stellar: Horizon and RPC Requests Time Out by Default
+
+`createHorizonClient()` and `createRpcClient()` used to wait for a response indefinitely. Each attempt now fails after 10 seconds without response headers or 30 seconds in total, and is retried or failed over like a network error. When every attempt fails, the client throws `RPCRetryExhaustedError` with an `RPCTimeoutError` on its `cause`.
+
+Pass longer timeouts for calls that are slow on purpose, such as Horizon transaction submission, or `0` to turn a timeout off:
+
+```typescript
+const horizon = createHorizonClient({
+  horizonUrl: 'https://horizon.stellar.org',
+  timeouts: { connectMs: 0, requestMs: 0 }, // the pre-2.0 behaviour
+});
+```
+
+See [Stellar Horizon and RPC request timeouts](./docs/chains/stellar-request-timeouts.md).
 
 ---
 

@@ -15,6 +15,7 @@ import {
   ECDHFailedError,
   RPCRequestError,
   RPCRetryExhaustedError,
+  RPCTimeoutError,
   RetentionExceededError,
   NameNotFoundError,
   NameAlreadyRegisteredError,
@@ -139,6 +140,53 @@ describe('Wraith Custom Errors Taxonomy', () => {
     });
   });
 
+  test('RPCRetryExhaustedError keeps the last error as a non-serialised cause', () => {
+    const timeout = new RPCTimeoutError({
+      url: 'https://rpc.test/',
+      endpoint: 'https://rpc.test',
+      attempt: 3,
+      phase: 'connect',
+      timeoutMs: 500,
+    });
+    const error = new RPCRetryExhaustedError('https://rpc.test', 3, timeout.message, {
+      cause: timeout,
+    });
+    expect(error.cause).toBe(timeout);
+    expect(Object.keys(error)).not.toContain('cause');
+    expect(JSON.parse(JSON.stringify(error))).not.toHaveProperty('cause');
+    expect('cause' in new RPCRetryExhaustedError('https://rpc.test', 3)).toBe(false);
+  });
+
+  test('RPCTimeoutError instanceof checks', () => {
+    const error = new RPCTimeoutError({
+      url: 'https://soroban-testnet.stellar.org/rpc',
+      endpoint: 'https://soroban-testnet.stellar.org',
+      attempt: 2,
+      phase: 'request',
+      timeoutMs: 30_000,
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(WraithError);
+    expect(error).toBeInstanceOf(WraithNetworkError);
+    expect(error).toBeInstanceOf(RPCTimeoutError);
+    expect(error.code).toBe('WRAITH/NETWORK/RPC_TIMEOUT');
+    expect(error.name).toBe('RPCTimeoutError');
+    expect(error.endpoint).toBe('https://soroban-testnet.stellar.org');
+    expect(error.attempt).toBe(2);
+    expect(error.phase).toBe('request');
+    expect(error.timeoutMs).toBe(30_000);
+    expect(error.context).toEqual({
+      url: 'https://soroban-testnet.stellar.org/rpc',
+      endpoint: 'https://soroban-testnet.stellar.org',
+      attempt: 2,
+      phase: 'request',
+      timeoutMs: 30_000,
+    });
+    expect(error.message).toContain('timed out after 30000ms before the response completed');
+    expect(error.message).toContain('attempt 2');
+    expect(error.toJSON().context).toEqual(error.context);
+  });
+
   test('RetentionExceededError instanceof checks', () => {
     const error = new RetentionExceededError(100, 105);
     expect(error).toBeInstanceOf(Error);
@@ -247,6 +295,16 @@ describe('Wraith Custom Errors Taxonomy', () => {
       [
         'RPCRetryExhaustedError',
         new RPCRetryExhaustedError('https://horizon.stellar.org', 5, 'timeout'),
+      ],
+      [
+        'RPCTimeoutError',
+        new RPCTimeoutError({
+          url: 'https://horizon.stellar.org/ledgers',
+          endpoint: 'https://horizon.stellar.org',
+          attempt: 1,
+          phase: 'connect',
+          timeoutMs: 10_000,
+        }),
       ],
       ['RetentionExceededError', new RetentionExceededError(100, 105)],
       ['NameNotFoundError', new NameNotFoundError('missing.wraith')],

@@ -427,12 +427,8 @@ export function hexToBytes(hex: string): Uint8Array;
 
 // @public (undocumented)
 export interface HorizonClient {
-    get<T = unknown>(path: string, overrides?: {
-        retry?: Partial<RetryPolicy>;
-    }): Promise<T>;
-    post<T = unknown>(path: string, body: URLSearchParams | string, overrides?: {
-        retry?: Partial<RetryPolicy>;
-    }): Promise<T>;
+    get<T = unknown>(path: string, overrides?: HorizonRequestOptions): Promise<T>;
+    post<T = unknown>(path: string, body: URLSearchParams | string, overrides?: HorizonRequestOptions): Promise<T>;
 }
 
 // @public (undocumented)
@@ -440,6 +436,13 @@ export interface HorizonClientConfig {
     fetchImpl?: typeof fetch;
     horizonUrl: string;
     retry?: Partial<RetryPolicy>;
+    timeouts?: RequestTimeouts;
+}
+
+// @public
+export interface HorizonRequestOptions {
+    retry?: Partial<RetryPolicy>;
+    timeouts?: RequestTimeouts;
 }
 
 // @public
@@ -541,6 +544,12 @@ export function prepareStealthAccountForAsset(accountBalances: Array<{
 // @public
 export function pubKeyToStellarAddress(pubKeyBytes: Uint8Array): string;
 
+// @public
+export interface RequestTimeouts {
+    connectMs?: number;
+    requestMs?: number;
+}
+
 // @public (undocumented)
 export class RetentionExceededError extends Error {
     constructor(requestedLedger: number, oldestAvailableLedger: number);
@@ -597,6 +606,7 @@ export interface RpcClientConfig {
         baseDelayMs: number;
         maxDelayMs: number;
     };
+    timeouts?: RequestTimeouts;
     tracer?: Tracer;
 }
 
@@ -608,6 +618,7 @@ export interface RpcEndpoint {
 
 // @public
 export interface RpcRequestOptions {
+    timeouts?: RequestTimeouts;
     tracer?: Tracer;
 }
 

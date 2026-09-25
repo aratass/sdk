@@ -318,12 +318,45 @@ export class RPCRequestError extends WraithNetworkError {
 
 // @public (undocumented)
 export class RPCRetryExhaustedError extends WraithNetworkError {
-    constructor(url: string, attempts: number, lastError?: string);
+    constructor(url: string, attempts: number, lastError?: string, options?: {
+        cause?: unknown;
+    });
     // (undocumented)
     readonly code = "WRAITH/NETWORK/RPC_RETRY_EXHAUSTED";
     // (undocumented)
     describe(): string;
 }
+
+// @public
+export interface RPCTimeoutDetails {
+    attempt: number;
+    endpoint: string;
+    phase: RPCTimeoutPhase;
+    timeoutMs: number;
+    url: string;
+}
+
+// @public
+export class RPCTimeoutError extends WraithNetworkError implements RPCTimeoutDetails {
+    constructor(details: RPCTimeoutDetails);
+    // (undocumented)
+    readonly attempt: number;
+    // (undocumented)
+    readonly code = "WRAITH/NETWORK/RPC_TIMEOUT";
+    // (undocumented)
+    describe(): string;
+    // (undocumented)
+    readonly endpoint: string;
+    // (undocumented)
+    readonly phase: RPCTimeoutPhase;
+    // (undocumented)
+    readonly timeoutMs: number;
+    // (undocumented)
+    readonly url: string;
+}
+
+// @public
+export type RPCTimeoutPhase = 'connect' | 'request';
 
 // @public (undocumented)
 export function scanAll(input: ScanAllInput): AsyncGenerator<MatchedAnnouncement>;

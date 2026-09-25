@@ -64,6 +64,7 @@ export {
   ECDHFailedError,
   RPCRequestError,
   RPCRetryExhaustedError,
+  RPCTimeoutError,
   RetentionExceededError,
   NameNotFoundError,
   NameAlreadyRegisteredError,
@@ -78,4 +79,9 @@ export {
   WalletUnavailableError,
   WalletRequestFailedError,
 } from './errors';
-export type { WalletErrorDetails, WalletWrongNetworkDetails } from './errors';
+export type {
+  WalletErrorDetails,
+  WalletWrongNetworkDetails,
+  RPCTimeoutDetails,
+  RPCTimeoutPhase,
+} from './errors';

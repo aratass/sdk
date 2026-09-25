@@ -1,5 +1,6 @@
-import { RPCRequestError, RPCRetryExhaustedError } from '../../errors';
+import { RPCRequestError, RPCRetryExhaustedError, RPCTimeoutError } from '../../errors';
 import { withSpan, type Tracer, type Span } from '../../telemetry';
+import { AttemptDeadline, resolveTimeouts, type RequestTimeouts } from './timeouts';
 
 export interface RpcEndpoint {
   url: string;
@@ -20,12 +21,19 @@ export interface RpcClientConfig {
   fetchImpl?: typeof fetch;
   /** Default tracer for spans created by this client. Overridable per call. */
   tracer?: Tracer;
+  /**
+   * Connect and request timeouts for each attempt. A timed-out attempt is aborted and counts as
+   * a failure for retry and failover. Defaults to 10 s for the headers and 30 s in total.
+   */
+  timeouts?: RequestTimeouts;
 }
 
-/** Optional per-call telemetry override for {@link RpcClient.request}. */
+/** Optional per-call overrides for {@link RpcClient.request}. */
 export interface RpcRequestOptions {
   /** Overrides the client's configured tracer (and the global one) for this call only. */
   tracer?: Tracer;
+  /** Overrides the client's timeouts for this call only. */
+  timeouts?: RequestTimeouts;
 }
 
 export interface RpcClient {
@@ -77,6 +85,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
   const maxDelayMs = config.retry?.maxDelayMs ?? 10_000;
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   const clientTracer = config.tracer;
+  const clientTimeouts = resolveTimeouts(config.timeouts);
 
   const states: EndpointState[] = config.endpoints.map((ep) => ({
     url: ep.url,
@@ -148,10 +157,11 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     body?: unknown,
     opts: RpcRequestOptions = {},
   ): Promise<T> {
+    const timeouts = resolveTimeouts(clientTimeouts, opts.timeouts);
     return withSpan(
       'stellar.rpc.request',
       { 'wraith.rpc.method': method, 'wraith.rpc.path': path },
-      (span) => requestInner<T>(method, path, body, span),
+      (span) => requestInner<T>(method, path, body, span, timeouts),
       opts.tracer ?? clientTracer,
     );
   }
@@ -161,6 +171,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     path: string,
     body: unknown,
     span: Span,
+    timeouts: Required<RequestTimeouts>,
   ): Promise<T> {
     // Each endpoint needs at least `failureThreshold` attempts for the circuit
     // breaker to trip and trigger failover — otherwise a low maxRetries could
@@ -191,6 +202,12 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
       span.setAttribute('wraith.rpc.endpoint', state.url);
       span.setAttribute('wraith.rpc.attempt', attempt + 1);
 
+      const deadline = new AttemptDeadline(timeouts, {
+        url,
+        endpoint: state.url,
+        attempt: attempt + 1,
+      });
+
       try {
         const init: RequestInit = { method };
         if (body !== undefined) {
@@ -198,15 +215,19 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
           init.body = JSON.stringify(body);
         }
 
-        const response = await fetchImpl(url, init);
+        const response = await deadline.send(fetchImpl, url, init);
 
         if (response.ok) {
-          markHealthy(state);
           span.setAttribute('wraith.rpc.status', response.status);
-          return (await response.json()) as T;
+          const data = (await deadline.read(response.json())) as T;
+          // Healthy only once the body is in: an endpoint that sends headers and then stalls
+          // must keep counting failures so the circuit breaker can fail over.
+          markHealthy(state);
+          return data;
         }
 
         if (DEFAULT_RETRYABLE_STATUSES.includes(response.status)) {
+          deadline.dispose();
           state.consecutiveFailures++;
           if (state.consecutiveFailures >= failureThreshold) {
             markUnhealthy(state);
@@ -228,9 +249,10 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
           continue;
         }
 
-        const data = await response.json().catch(() => ({}));
+        const data = await deadline.read(response.json()).catch(() => ({}));
         throw new RPCRequestError(url, response.status, JSON.stringify(data));
       } catch (err) {
+        deadline.dispose();
         if (
           err instanceof RPCRequestError &&
           !DEFAULT_RETRYABLE_STATUSES.includes(err.statusCode)
@@ -247,12 +269,17 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
 
         if (state.consecutiveFailures >= failureThreshold) {
           markUnhealthy(state);
-          const failed = attemptFailover(`Network error on ${state.url}: ${lastError.message}`);
+          const failed = attemptFailover(
+            lastError instanceof RPCTimeoutError
+              ? `Timeout on ${state.url}: ${lastError.phase} timeout of ${lastError.timeoutMs}ms`
+              : `Network error on ${state.url}: ${lastError.message}`,
+          );
           if (!failed) {
             throw new RPCRetryExhaustedError(
               state.url,
               maxAttempts,
               `All endpoints exhausted: ${lastError.message}`,
+              { cause: lastError },
             );
           }
           continue;
@@ -260,10 +287,14 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
 
         const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs);
         await sleep(delay);
+      } finally {
+        deadline.dispose();
       }
     }
 
-    throw new RPCRetryExhaustedError(states[currentIndex].url, maxAttempts, lastError?.message);
+    throw new RPCRetryExhaustedError(states[currentIndex].url, maxAttempts, lastError?.message, {
+      cause: lastError,
+    });
   }
 
   return {

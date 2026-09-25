@@ -22,6 +22,11 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
   - `watchWalletEvents()` reports `accountChanged`, `networkChanged` and `disconnect` events from an EIP-1193 provider, an `@solana/wallet-adapter` adapter or Freighter's `WatchWalletChanges`.
   - `ViemWalletAdapter.getNetwork()`, `FreighterWalletAdapter.getNetwork()` and `assertWalletNetwork()` for wrong-network checks.
   - Opt-in and backward compatible: the adapters' `signMessage()` and `getAddress()` throw the same errors as before. See [`docs/wallet-adapters.md`](./docs/wallet-adapters.md).
+- **Request Timeouts for the Stellar Horizon and RPC Clients** (issue #202): `createHorizonClient()` and `createRpcClient()` accept `timeouts: { connectMs, requestMs }`, and each call can override them.
+  - `connectMs` (default 10 s) covers everything up to the response headers; `requestMs` (default 30 s) covers the whole attempt, body included. `0` turns either off.
+  - A timed-out attempt is aborted before the client retries or fails over. The fetch and the body read are raced against the deadline, so a `fetch` that ignores the abort signal cannot hang the request.
+  - New `RPCTimeoutError` (`WRAITH/NETWORK/RPC_TIMEOUT`), exported from the package root, carries the URL, endpoint, attempt number, which timeout fired and its length. When every attempt fails, `RPCRetryExhaustedError` keeps the last attempt's error on `cause`.
+  - `createRpcClient()` now marks an endpoint healthy only after the response body has been read, so an endpoint that sends headers and then stalls still trips the circuit breaker. See [`docs/chains/stellar-request-timeouts.md`](./docs/chains/stellar-request-timeouts.md).
 
 ### Performance
 
@@ -29,6 +34,7 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
 
 ### Changed
 
+- **Stellar Horizon and RPC Clients Time Out by Default** (issue #202): an attempt now fails after 10 s without response headers or 30 s in total, then retries or fails over, instead of waiting indefinitely. Pass `timeouts: { connectMs: 0, requestMs: 0 }` for the old behaviour, or longer values for slow calls such as Horizon transaction submission.
 - **Stellar Chain Module Cryptographic Audit Fixes**: Applied all findings from independent cryptographic audit (issue #55). Breaking changes:
   - `scanAnnouncements()` now skips candidates with zero derived scalars (cryptographically required, probability ~1 in 2^255).
   - View-tag computation optimized using ephemeralPubKey ⊕ viewingPubKey prefilter (1.5–2x faster, functionally identical).

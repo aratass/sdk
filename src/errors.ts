@@ -261,13 +261,26 @@ export class RPCRequestError extends WraithNetworkError {
 export class RPCRetryExhaustedError extends WraithNetworkError {
   readonly code = 'WRAITH/NETWORK/RPC_RETRY_EXHAUSTED';
 
-  constructor(url: string, attempts: number, lastError?: string) {
+  /**
+   * @param options - `cause` is the error from the last attempt, e.g. an {@link RPCTimeoutError}
+   * that still names the endpoint and attempt that timed out. Exposed as `error.cause` and left
+   * out of `toJSON()`.
+   */
+  constructor(url: string, attempts: number, lastError?: string, options?: { cause?: unknown }) {
     super(
       `RPC request retries exhausted for "${url}" after ${attempts} attempts${
         lastError ? `. Last error: ${lastError}` : ''
       }`,
       { url, attempts, lastError },
     );
+    if (options?.cause !== undefined) {
+      // Same semantics as a native `Error.cause`: readable, but not enumerable or serialised.
+      Object.defineProperty(this, 'cause', {
+        value: options.cause,
+        writable: true,
+        configurable: true,
+      });
+    }
   }
 
   describe(): string {
@@ -276,6 +289,68 @@ export class RPCRetryExhaustedError extends WraithNetworkError {
       `Gave up on "${url}" after ${attempts} attempts${lastError ? ` (last error: ${lastError})` : ''}. ` +
       `Try: check the endpoint is reachable and healthy, or configure a fallback RPC URL. ` +
       `See ${this.docsLink}.`
+    );
+  }
+}
+
+/**
+ * Which timeout fired: `'connect'` while waiting for the response headers, `'request'` for the
+ * whole attempt.
+ */
+export type RPCTimeoutPhase = 'connect' | 'request';
+
+/** Details for {@link RPCTimeoutError}. */
+export interface RPCTimeoutDetails {
+  /** Full URL of the request that timed out. */
+  url: string;
+  /** Base URL of the endpoint the attempt was sent to. */
+  endpoint: string;
+  /** 1-based attempt number, counting retries and failover attempts. */
+  attempt: number;
+  /** Which timeout fired. */
+  phase: RPCTimeoutPhase;
+  /** The timeout that elapsed, in milliseconds. */
+  timeoutMs: number;
+}
+
+/**
+ * Thrown when one attempt of a Horizon or Soroban RPC request runs past its connect or request
+ * timeout. The request is aborted before the client retries or fails over; when every attempt
+ * fails, the client throws {@link RPCRetryExhaustedError} with the last timeout as its `cause`.
+ */
+export class RPCTimeoutError extends WraithNetworkError implements RPCTimeoutDetails {
+  readonly code = 'WRAITH/NETWORK/RPC_TIMEOUT';
+  readonly url: string;
+  readonly endpoint: string;
+  readonly attempt: number;
+  readonly phase: RPCTimeoutPhase;
+  readonly timeoutMs: number;
+
+  constructor(details: RPCTimeoutDetails) {
+    const { url, endpoint, attempt, phase, timeoutMs } = details;
+    const waiting =
+      phase === 'connect' ? 'waiting for response headers' : 'before the response completed';
+    super(
+      `RPC request to "${url}" timed out after ${timeoutMs}ms ${waiting} (endpoint ${endpoint}, attempt ${attempt})`,
+      { url, endpoint, attempt, phase, timeoutMs },
+    );
+    this.url = url;
+    this.endpoint = endpoint;
+    this.attempt = attempt;
+    this.phase = phase;
+    this.timeoutMs = timeoutMs;
+  }
+
+  describe(): string {
+    const { endpoint, attempt, phase, timeoutMs } = this.context ?? {};
+    const [missing, option] =
+      phase === 'connect'
+        ? ['response headers', 'timeouts.connectMs']
+        : ['a complete response', 'timeouts.requestMs'];
+    return (
+      `Attempt ${attempt} to "${endpoint}" got no ${missing} within ${timeoutMs}ms. Try: configure ` +
+      `a fallback endpoint so the client can fail over, or raise ${option} if this endpoint is ` +
+      `just slow. See ${this.docsLink}.`
     );
   }
 }

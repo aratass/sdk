@@ -24,6 +24,7 @@ WraithError (Abstract Base)
 ├── WraithNetworkError
 │   ├── RPCRequestError
 │   ├── RPCRetryExhaustedError
+│   ├── RPCTimeoutError
 │   └── RetentionExceededError
 ├── WraithContractError
 │   ├── NameNotFoundError
@@ -77,11 +78,14 @@ Thrown when low-level mathematical operations or elliptic curve calculations fai
 
 Thrown when HTTP queries to Wraith APIs, Horizon/Soroban endpoints, Solana clusters, or CKB indexers fail.
 
-| Error Class              | Stable Code                            | Context Fields                      | Description                                                               |
-| :----------------------- | :------------------------------------- | :---------------------------------- | :------------------------------------------------------------------------ |
-| `RPCRequestError`        | `"WRAITH/NETWORK/RPC_REQUEST"`         | `url`, `statusCode`, `responseText` | Thrown when an HTTP/RPC endpoint returns a non-2xx status code.           |
-| `RPCRetryExhaustedError` | `"WRAITH/NETWORK/RPC_RETRY_EXHAUSTED"` | `url`, `attempts`, `lastError`      | Thrown when all query retry strategies have timed out or failed.          |
-| `RetentionExceededError` | `"WRAITH/NETWORK/RETENTION_EXCEEDED"`  | `limit`, `actual`                   | Thrown when querying historical logs beyond maximum retention boundaries. |
+| Error Class              | Stable Code                            | Context Fields                                     | Description                                                                   |
+| :----------------------- | :------------------------------------- | :------------------------------------------------- | :---------------------------------------------------------------------------- |
+| `RPCRequestError`        | `"WRAITH/NETWORK/RPC_REQUEST"`         | `url`, `statusCode`, `responseText`                | Thrown when an HTTP/RPC endpoint returns a non-2xx status code.               |
+| `RPCRetryExhaustedError` | `"WRAITH/NETWORK/RPC_RETRY_EXHAUSTED"` | `url`, `attempts`, `lastError`                     | Thrown when all query retry strategies have timed out or failed.              |
+| `RPCTimeoutError`        | `"WRAITH/NETWORK/RPC_TIMEOUT"`         | `url`, `endpoint`, `attempt`, `phase`, `timeoutMs` | Thrown when a Horizon/Soroban attempt exceeds its connect or request timeout. |
+| `RetentionExceededError` | `"WRAITH/NETWORK/RETENTION_EXCEEDED"`  | `limit`, `actual`                                  | Thrown when querying historical logs beyond maximum retention boundaries.     |
+
+When the Horizon or Soroban RPC client gives up, `RPCRetryExhaustedError.cause` holds the last attempt's error, such as an `RPCTimeoutError`. See [Stellar Horizon and RPC request timeouts](./chains/stellar-request-timeouts.md).
 
 ### 4. Smart Contract Errors (`WraithContractError`)
 
