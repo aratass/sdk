@@ -1,6 +1,15 @@
 import type { Network } from './types';
 import { UnsupportedAssetError } from '../../errors';
-import { Account, Contract, TransactionBuilder, rpc } from '@stellar/stellar-sdk';
+import {
+  Account,
+  Address,
+  Contract,
+  StrKey,
+  TransactionBuilder,
+  rpc,
+  scValToNative,
+  type xdr,
+} from '@stellar/stellar-sdk';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +106,19 @@ const METADATA_METHODS = {
 
 const BALANCE_METHOD = 'balance';
 
+/**
+ * The ScVal types each SEP-41 method may return, as `ScValType` names.
+ *
+ * SEP-41 declares `name` and `symbol` as `String`. `Symbol` is accepted as
+ * well, since it is also text and some deployed tokens return it.
+ */
+const RETURN_TYPES: Readonly<Record<string, readonly string[]>> = {
+  [METADATA_METHODS.name]: ['scvString', 'scvSymbol'],
+  [METADATA_METHODS.symbol]: ['scvString', 'scvSymbol'],
+  [METADATA_METHODS.decimals]: ['scvU32'],
+  [BALANCE_METHOD]: ['scvI128'],
+};
+
 // ---------------------------------------------------------------------------
 // Metadata cache
 // ---------------------------------------------------------------------------
@@ -163,9 +185,9 @@ function classifySimulationError(detail: string): AssetMetadataFailureReason {
 /**
  * Validates a `name` or `symbol` response.
  *
- * SEP-41 says both are strings. A contract that returns a number, an empty
- * string or whitespace is not usable, and caching it would poison every later
- * read for the session.
+ * The ScVal type has already been checked, so this is text. An empty string or
+ * whitespace is still not a usable label, and caching it would poison every
+ * later read for the session.
  */
 function validateLabel(field: AssetMetadataField, value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -180,9 +202,10 @@ function validateLabel(field: AssetMetadataField, value: unknown): string {
 /**
  * Validates a `decimals` response.
  *
- * Must be a whole number in 0 to {@link MAX_DECIMALS}. `Number(scv.u32())` on a
- * non-numeric ScVal yields `NaN`, which would otherwise flow into every amount
- * calculation downstream and turn into `NaN` there instead of failing here.
+ * The ScVal type has already been checked to be a `u32`, so this bounds it to 0
+ * to {@link MAX_DECIMALS}, the range {@link AssetMetadata.decimals} documents.
+ * The integer check stays as a guard: a `NaN` here would not throw, it would
+ * flow into every amount calculation downstream instead.
  */
 function validateDecimals(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
@@ -195,24 +218,6 @@ function validateDecimals(value: unknown): number {
   return n;
 }
 
-/**
- * Decodes the text of an `ScSymbol` or `ScString` return value.
- *
- * The XDR union exposes these as Buffer-like objects, so `toString()` is
- * required for a real RPC response. It is applied only to objects: a contract
- * that answers `symbol()` with a number must not be laundered into the string
- * `"42"` by a blanket `String(...)`, which is exactly the coercion that let a
- * non-conforming contract look valid. Primitives other than strings are passed
- * through unchanged for {@link validateLabel} to reject.
- */
-function decodeScString(raw: unknown): unknown {
-  if (typeof raw === 'string') return raw;
-  if (raw === null || typeof raw !== 'object') return raw;
-  const text = (raw as { toString?: () => string }).toString?.();
-  // A plain object has no meaningful text form; treat it as undecodable.
-  return text === undefined || text === '[object Object]' ? raw : text;
-}
-
 /** Short, safe rendering of an unexpected value for an error message. */
 function describe(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value.slice(0, 40));
@@ -223,67 +228,54 @@ function describe(value: unknown): string {
 }
 
 /**
- * Reconstructs an i128 balance from its two 64-bit halves.
+ * Checks a contract's return value against the SEP-41 type and decodes it.
  *
- * The previous implementation read `i128.lo()` alone and fell back to `'0'`, so
- * any balance at or above 2^64 was silently truncated, and an undecodable
- * response was indistinguishable from an account holding nothing. Both are
- * corrected here: the high half is included when the RPC supplies it, and a
- * response that decodes to nothing throws instead of reporting zero.
+ * `retval` is an `xdr.ScVal`: a union whose arms are read through methods
+ * (`str()`, `sym()`, `u32()`, `i128()`), each of which throws when called on
+ * another arm. The arm is therefore checked first, with `switch()`, so a
+ * contract that returns the wrong type is reported as `invalid` instead of
+ * surfacing as an exception that would be misread as an RPC failure. The
+ * decoding itself is left to the SDK's `scValToNative`: UTF-8 text for
+ * `String` and `Symbol`, a number for `u32`, and a bigint built from both
+ * 64-bit halves for `i128`.
  */
-function decodeI128(scv: any): bigint {
-  const i128 = scv?.i128;
-  if (!i128 || typeof i128.lo !== 'function') {
+function decodeReturnValue(method: string, scv: xdr.ScVal): unknown {
+  const type = scv.switch().name;
+
+  // A function that returns nothing. Nothing is known about the field, which
+  // is the same `missing` case as a simulation without a result.
+  if (type === 'scvVoid') {
+    throw new MetadataFieldError(`SEP-41 contract call "${method}" returned no result`, 'missing');
+  }
+
+  const expected = RETURN_TYPES[method];
+  if (!expected) {
+    throw new MetadataFieldError(`Unsupported method: ${method}`, 'missing');
+  }
+  if (!expected.includes(type)) {
     throw new MetadataFieldError(
-      `SEP-41 contract call "${BALANCE_METHOD}" returned a value that is not an i128`,
+      `SEP-41 contract returned an unusable "${method}": expected ${expected.join(' or ')}, got ${type}`,
       'invalid',
     );
   }
 
-  const rawLo = i128.lo();
-  const lo = toUnsigned64(rawLo);
-
-  let hi = 0n;
-  if (typeof i128.hi === 'function') {
-    const rawHi = i128.hi();
-    if (rawHi !== undefined && rawHi !== null) hi = toBigInt(rawHi);
-  }
-
-  return (hi << 64n) + lo;
-}
-
-/** Parses one half of an i128, accepting the string, number and XDR-ish shapes the RPC returns. */
-function toBigInt(raw: unknown): bigint {
-  if (typeof raw === 'bigint') return raw;
-  if (typeof raw === 'number' && Number.isInteger(raw)) return BigInt(raw);
-  if (typeof raw === 'string' && /^-?\d+$/.test(raw)) return BigInt(raw);
-  if (raw && typeof (raw as any).toString === 'function') {
-    const asText = (raw as any).toString();
-    if (/^-?\d+$/.test(asText)) return BigInt(asText);
-  }
-  throw new MetadataFieldError(
-    `SEP-41 contract call "${BALANCE_METHOD}" returned a non-integer balance component: ${describe(raw)}`,
-    'invalid',
-  );
-}
-
-/** Reinterprets the low half as unsigned, since it carries the bottom 64 bits of the magnitude. */
-function toUnsigned64(raw: unknown): bigint {
-  const value = toBigInt(raw);
-  return value < 0n ? value + (1n << 64n) : value;
+  const value: unknown = scValToNative(scv);
+  if (method === METADATA_METHODS.decimals) return validateDecimals(value);
+  if (method === BALANCE_METHOD) return value;
+  return validateLabel(method as AssetMetadataField, value);
 }
 
 async function callContractMethod<T>(
   contractId: string,
   method: string,
-  args: unknown[],
+  args: xdr.ScVal[],
   rpcUrl: string,
 ): Promise<T> {
   const server = new rpc.Server(rpcUrl);
   const contract = new Contract(contractId);
 
   // Build the contract operation
-  const operation = contract.call(method, ...(args as [any, ...any[]]));
+  const operation = contract.call(method, ...args);
 
   // Simulate to get the result without submitting
   const sourceAccount = new Account(
@@ -300,9 +292,9 @@ async function callContractMethod<T>(
     .setTimeout(30)
     .build();
 
-  let simResult: any;
+  let sim: rpc.Api.SimulateTransactionResponse;
   try {
-    simResult = (await server.simulateTransaction(tx)) as any;
+    sim = await server.simulateTransaction(tx);
   } catch (cause) {
     throw new MetadataFieldError(
       `SEP-41 contract call "${method}" failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -310,41 +302,20 @@ async function callContractMethod<T>(
     );
   }
 
-  // Type guard for error response
-  if ('error' in simResult) {
+  if (rpc.Api.isSimulationError(sim)) {
     throw new MetadataFieldError(
-      `SEP-41 contract call "${method}" failed: ${simResult.error}`,
-      classifySimulationError(String(simResult.error)),
+      `SEP-41 contract call "${method}" failed: ${sim.error}`,
+      classifySimulationError(sim.error),
     );
   }
 
-  // Type guard for success response. A contract that does not implement the
-  // method simulates without an error and returns nothing, so this is the
-  // "missing" case rather than a transport failure.
-  if (!simResult.result || !simResult.result.retval) {
+  // A simulation that succeeded without a result returned nothing, so this is
+  // the "missing" case rather than a transport failure.
+  if (!sim.result?.retval) {
     throw new MetadataFieldError(`SEP-41 contract call "${method}" returned no result`, 'missing');
   }
 
-  // Decode the return value based on expected type
-  const scv = simResult.result.retval;
-
-  if (method === METADATA_METHODS.decimals) {
-    return validateDecimals(scv.u32()) as T;
-  }
-
-  if (method === METADATA_METHODS.name || method === METADATA_METHODS.symbol) {
-    // Decode string from ScVal. `sym` and `str` are getters on the XDR union,
-    // so a non-string contract response arrives here as a number or object and
-    // is rejected by validateLabel rather than coerced.
-    const raw = (scv as any).sym ?? (scv as any).str;
-    return validateLabel(method as AssetMetadataField, decodeScString(raw)) as T;
-  }
-
-  if (method === BALANCE_METHOD) {
-    return decodeI128(scv) as T;
-  }
-
-  throw new MetadataFieldError(`Unsupported method: ${method}`, 'missing');
+  return decodeReturnValue(method, sim.result.retval) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,15 +479,23 @@ export async function getAssetBalance(
 ): Promise<bigint> {
   const rpcUrl = resolveRpcUrl(network, opts.rpcUrl);
 
-  // Basic validation
-  if (!address.startsWith('G') || address.length !== 56) {
+  // A full strkey check, checksum included, so a malformed key fails here with
+  // a typed error rather than inside the SDK's Address constructor below.
+  if (!StrKey.isValidEd25519PublicKey(address)) {
     throw new UnsupportedAssetError(
       `Invalid Stellar address: "${address}". Expected a G... public key.`,
       network,
     );
   }
 
-  const balance = await callContractMethod<bigint>(contractId, BALANCE_METHOD, [address], rpcUrl);
+  // SEP-41 declares `balance(id: Address)`, so the account goes in as an
+  // Address ScVal. A plain string cannot be encoded into the transaction.
+  const balance = await callContractMethod<bigint>(
+    contractId,
+    BALANCE_METHOD,
+    [Address.fromString(address).toScVal()],
+    rpcUrl,
+  );
 
   return balance;
 }

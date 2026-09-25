@@ -1,44 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Mock @stellar/stellar-sdk BEFORE importing the module under test
+// Only the network is mocked. Transactions are built by the real SDK, and every
+// contract reply is a real `xdr.ScVal` that is serialised to XDR and parsed back
+// by the SDK's own `rpc.parseRawSimulation`, which is what `simulateTransaction`
+// returns. The code under test therefore sees exactly the objects a live Soroban
+// RPC produces: string arms arrive as Buffers and are read through `str()` and
+// `sym()`, and an i128 arrives as two 64-bit halves.
 // ---------------------------------------------------------------------------
 
-/** ScVal stub whose `u32`, `sym` and `str` all report the same value. */
-const mockScVal = (value: unknown) => ({
-  u32: () => value,
-  get sym() {
-    return value;
-  },
-  get str() {
-    return value;
-  },
+const { simulate } = vi.hoisted(() => ({ simulate: vi.fn() }));
+
+vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>();
+  class Server {
+    async simulateTransaction(tx: { toXDR(): string }) {
+      // The real client serialises the transaction before sending it, so an
+      // argument that cannot be encoded fails here just as it would live.
+      tx.toXDR();
+      return simulate(tx);
+    }
+  }
+  return { ...actual, rpc: { ...actual.rpc, Server } };
 });
 
-const mockRetval = (value: unknown) => ({ result: { retval: mockScVal(value) } });
-
-/** i128 stub. `hi` is only attached when supplied, so the hi-absent path is real. */
-const mockI128 = (lo: unknown, hi?: unknown) => ({
-  result: {
-    retval: {
-      i128: hi === undefined ? { lo: () => lo } : { lo: () => lo, hi: () => hi },
-    },
-  },
-});
-
-const mockSimulateTransaction = vi.fn();
-
-vi.mock('@stellar/stellar-sdk', () => ({
-  rpc: { Server: vi.fn(() => ({ simulateTransaction: mockSimulateTransaction })) },
-  Account: vi.fn(),
-  Contract: vi.fn(() => ({ call: vi.fn() })),
-  TransactionBuilder: vi.fn(() => ({
-    addOperation: vi.fn().mockReturnThis(),
-    setTimeout: vi.fn().mockReturnThis(),
-    build: vi.fn(),
-  })),
-}));
-
+import {
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  xdr,
+  type Operation,
+  type Transaction,
+} from '@stellar/stellar-sdk';
 import {
   getAssetMetadata,
   getAssetMetadataResult,
@@ -49,40 +42,113 @@ import {
 const CONTRACT = 'CCJLJ2QRBJAAKIG6ELNQVXLLWMKKWVN5O2FKWUETHZGMPAD4MHK7WVWL';
 const ADDRESS = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 
-/** Calls arrive in field order: name, symbol, decimals. */
-const queue = (name: unknown, symbol: unknown, decimals: unknown) => {
-  mockSimulateTransaction
-    .mockResolvedValueOnce(name)
-    .mockResolvedValueOnce(symbol)
-    .mockResolvedValueOnce(decimals);
-};
+// ---------------------------------------------------------------------------
+// Real ScVal values and RPC responses
+// ---------------------------------------------------------------------------
+
+const str = (text: string) => xdr.ScVal.scvString(text);
+const sym = (text: string) => xdr.ScVal.scvSymbol(text);
+const u32 = (n: number) => xdr.ScVal.scvU32(n);
+const i128 = (n: bigint) => nativeToScVal(n, { type: 'i128' });
+
+/** A successful simulation whose contract call returned `value`. */
+const returns = (value: xdr.ScVal) =>
+  rpc.parseRawSimulation({
+    id: '1',
+    latestLedger: 1,
+    minResourceFee: '0',
+    results: [{ auth: [], xdr: value.toXDR('base64') }],
+  });
+
+/** A successful simulation with no result row. */
+const noResult = () => rpc.parseRawSimulation({ id: '1', latestLedger: 1, minResourceFee: '0' });
+
+/** A simulation the RPC reports as failed. */
+const fails = (error: string) => rpc.parseRawSimulation({ id: '1', latestLedger: 1, error });
+
+/** What Soroban reports when the contract does not export the function. */
+const NO_SUCH_FUNCTION =
+  'HostError: Error(WasmVm, MissingValue)\n\nEvent log (newest first):\n' +
+  '   0: [Diagnostic Event] topics:[error, Error(WasmVm, MissingValue)], ' +
+  'data:["trying to invoke non-existent contract function", name]';
+
+type Reply = rpc.Api.SimulateTransactionResponse | Error;
+
+/** The contract function a transaction invokes, read back from the transaction itself. */
+function invocation(tx: Transaction) {
+  const call = (tx.operations[0] as Operation.InvokeHostFunction).func.invokeContract();
+  return {
+    fn: call.functionName().toString(),
+    argTypes: call.args().map((arg) => arg.switch().name),
+    args: call.args().map((arg) => scValToNative(arg)),
+  };
+}
+
+/** Answers each contract function with its reply. A call to any other function fails the test. */
+function contract(replies: Record<string, Reply>) {
+  simulate.mockImplementation(async (tx: Transaction) => {
+    const { fn } = invocation(tx);
+    const reply = replies[fn];
+    if (reply === undefined) throw new Error(`unexpected contract call "${fn}"`);
+    if (reply instanceof Error) throw reply;
+    return reply;
+  });
+}
+
+const token = (name: xdr.ScVal, symbol: xdr.ScVal, decimals: xdr.ScVal) =>
+  contract({ name: returns(name), symbol: returns(symbol), decimals: returns(decimals) });
 
 describe('SEP-41 metadata resilience', () => {
   beforeEach(() => {
     clearAssetMetadataCache();
-    mockSimulateTransaction.mockReset();
+    simulate.mockReset();
   });
 
   describe('complete', () => {
-    it('reports every field and caches the result', async () => {
-      queue(mockRetval('Test Asset'), mockRetval('TST'), mockRetval(7));
+    it('decodes real String and u32 return values and caches the result', async () => {
+      token(str('USD Coin'), str('USDC'), u32(7));
       const first = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(first.status).toBe('complete');
-      expect(first.metadata).toEqual({ name: 'Test Asset', symbol: 'TST', decimals: 7 });
+      expect(first.metadata).toEqual({ name: 'USD Coin', symbol: 'USDC', decimals: 7 });
       expect(first.failures).toEqual([]);
+
+      // The three reads are real zero-argument contract invocations.
+      expect(simulate.mock.calls.map(([tx]) => invocation(tx))).toEqual([
+        { fn: 'name', argTypes: [], args: [] },
+        { fn: 'symbol', argTypes: [], args: [] },
+        { fn: 'decimals', argTypes: [], args: [] },
+      ]);
 
       const second = await getAssetMetadataResult(CONTRACT, 'testnet');
       expect(second.status).toBe('complete');
       // Served from cache, so no further RPC calls.
-      expect(mockSimulateTransaction).toHaveBeenCalledTimes(3);
+      expect(simulate).toHaveBeenCalledTimes(3);
+    });
+
+    it('accepts a Symbol where SEP-41 declares a String', async () => {
+      token(sym('USDC'), sym('USDC'), u32(7));
+      const result = await getAssetMetadataResult(CONTRACT, 'testnet');
+
+      expect(result.status).toBe('complete');
+      expect(result.metadata).toEqual({ name: 'USDC', symbol: 'USDC', decimals: 7 });
+    });
+
+    it('decodes String bytes as UTF-8', async () => {
+      token(str('Café Token ✓'), str('CAFÉ'), u32(2));
+      const result = await getAssetMetadataResult(CONTRACT, 'testnet');
+
+      expect(result.metadata).toEqual({ name: 'Café Token ✓', symbol: 'CAFÉ', decimals: 2 });
     });
   });
 
   describe('partial', () => {
     it('keeps the fields that answered when a method is missing', async () => {
-      // A contract with no `name`: simulation succeeds but returns no retval.
-      queue({}, mockRetval('TST'), mockRetval(7));
+      contract({
+        name: fails(NO_SUCH_FUNCTION),
+        symbol: returns(str('TST')),
+        decimals: returns(u32(7)),
+      });
       const result = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(result.status).toBe('partial');
@@ -91,23 +157,39 @@ describe('SEP-41 metadata resilience', () => {
       expect(result.failures[0]).toMatchObject({ field: 'name', reason: 'missing' });
     });
 
+    it.each([
+      ['no result row', noResult()],
+      ['a void return value', returns(xdr.ScVal.scvVoid())],
+    ])('treats %s as missing', async (_label, reply) => {
+      contract({ name: reply, symbol: returns(str('TST')), decimals: returns(u32(7)) });
+      const result = await getAssetMetadataResult(CONTRACT, 'testnet');
+
+      expect(result.status).toBe('partial');
+      expect(result.failures[0]).toMatchObject({ field: 'name', reason: 'missing' });
+    });
+
     it('does not cache a partial read', async () => {
-      queue({}, mockRetval('TST'), mockRetval(7));
+      contract({
+        name: fails(NO_SUCH_FUNCTION),
+        symbol: returns(str('TST')),
+        decimals: returns(u32(7)),
+      });
       await getAssetMetadataResult(CONTRACT, 'testnet');
 
-      queue(mockRetval('Now Present'), mockRetval('TST'), mockRetval(7));
+      token(str('Now Present'), str('TST'), u32(7));
       const retry = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(retry.status).toBe('complete');
       expect(retry.metadata).toEqual({ name: 'Now Present', symbol: 'TST', decimals: 7 });
       // Six calls total proves the partial read was re-fetched, not served stale.
-      expect(mockSimulateTransaction).toHaveBeenCalledTimes(6);
+      expect(simulate).toHaveBeenCalledTimes(6);
     });
   });
 
   describe('unsupported', () => {
     it('reports unsupported when no field can be read', async () => {
-      mockSimulateTransaction.mockResolvedValue({ error: 'no such function' });
+      const missing = fails(NO_SUCH_FUNCTION);
+      contract({ name: missing, symbol: missing, decimals: missing });
       const result = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(result.status).toBe('unsupported');
@@ -117,7 +199,8 @@ describe('SEP-41 metadata resilience', () => {
     });
 
     it('classifies an unrecognised RPC failure as rpc-error, not missing', async () => {
-      mockSimulateTransaction.mockRejectedValue(new Error('socket hang up'));
+      const down = new Error('socket hang up');
+      contract({ name: down, symbol: down, decimals: down });
       const result = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(result.status).toBe('unsupported');
@@ -125,12 +208,12 @@ describe('SEP-41 metadata resilience', () => {
     });
 
     it('does not cache an unsupported verdict', async () => {
-      mockSimulateTransaction.mockResolvedValue({ error: 'no such function' });
+      const missing = fails(NO_SUCH_FUNCTION);
+      contract({ name: missing, symbol: missing, decimals: missing });
       await getAssetMetadataResult(CONTRACT, 'testnet');
-      expect(mockSimulateTransaction).toHaveBeenCalledTimes(3);
+      expect(simulate).toHaveBeenCalledTimes(3);
 
-      mockSimulateTransaction.mockReset();
-      queue(mockRetval('Recovered'), mockRetval('RCV'), mockRetval(2));
+      token(str('Recovered'), str('RCV'), u32(2));
       const retry = await getAssetMetadataResult(CONTRACT, 'testnet');
       expect(retry.status).toBe('complete');
     });
@@ -138,12 +221,12 @@ describe('SEP-41 metadata resilience', () => {
 
   describe('value validation', () => {
     it.each([
-      ['a non-integer', 7.5],
-      ['a negative', -1],
-      ['above the SEP-41 maximum', 19],
-      ['a non-numeric ScVal', 'not a number'],
+      ['above the SEP-41 maximum', u32(19)],
+      ['a String instead of a u32', str('7')],
+      ['a signed i32 instead of a u32', xdr.ScVal.scvI32(-1)],
+      ['an i128 instead of a u32', i128(7n)],
     ])('rejects %s decimals as invalid rather than caching it', async (_label, bad) => {
-      queue(mockRetval('Test'), mockRetval('TST'), mockRetval(bad));
+      token(str('Test'), str('TST'), bad);
       const result = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(result.status).toBe('partial');
@@ -154,11 +237,12 @@ describe('SEP-41 metadata resilience', () => {
     });
 
     it.each([
-      ['an empty string', ''],
-      ['whitespace only', '   '],
-      ['a number', 42],
+      ['an empty string', str('')],
+      ['whitespace only', str('   ')],
+      ['a u32', u32(42)],
+      ['a bool', xdr.ScVal.scvBool(true)],
     ])('rejects %s as a symbol', async (_label, bad) => {
-      queue(mockRetval('Test'), mockRetval(bad), mockRetval(7));
+      token(str('Test'), bad, u32(7));
       const result = await getAssetMetadataResult(CONTRACT, 'testnet');
 
       expect(result.status).toBe('partial');
@@ -166,12 +250,21 @@ describe('SEP-41 metadata resilience', () => {
       expect(result.failures[0]).toMatchObject({ field: 'symbol', reason: 'invalid' });
     });
 
+    it('names the type it got when the type is wrong', async () => {
+      token(str('Test'), u32(42), u32(7));
+      const result = await getAssetMetadataResult(CONTRACT, 'testnet');
+
+      expect(result.failures[0].message).toBe(
+        'SEP-41 contract returned an unusable "symbol": expected scvString or scvSymbol, got scvU32',
+      );
+    });
+
     it('accepts the boundary decimals values 0 and 18', async () => {
-      queue(mockRetval('Zero'), mockRetval('ZRO'), mockRetval(0));
+      token(str('Zero'), str('ZRO'), u32(0));
       expect((await getAssetMetadataResult(CONTRACT, 'testnet')).status).toBe('complete');
 
       clearAssetMetadataCache();
-      queue(mockRetval('Max'), mockRetval('MAX'), mockRetval(18));
+      token(str('Max'), str('MAX'), u32(18));
       const max = await getAssetMetadataResult(CONTRACT, 'testnet');
       expect(max.status).toBe('complete');
       expect(max.metadata.decimals).toBe(18);
@@ -180,14 +273,15 @@ describe('SEP-41 metadata resilience', () => {
 
   describe('getAssetMetadata keeps its old contract', () => {
     it('still throws, with the first failure in field order', async () => {
-      mockSimulateTransaction.mockResolvedValue({ error: 'Contract panic' });
+      const panic = fails('Contract panic');
+      contract({ name: panic, symbol: panic, decimals: panic });
       await expect(getAssetMetadata(CONTRACT, 'testnet')).rejects.toThrow(
         'SEP-41 contract call "name" failed: Contract panic',
       );
     });
 
     it('still returns plain metadata on the happy path', async () => {
-      queue(mockRetval('Test Asset'), mockRetval('TST'), mockRetval(7));
+      token(str('Test Asset'), str('TST'), u32(7));
       await expect(getAssetMetadata(CONTRACT, 'testnet')).resolves.toEqual({
         name: 'Test Asset',
         symbol: 'TST',
@@ -196,34 +290,48 @@ describe('SEP-41 metadata resilience', () => {
     });
   });
 
-  describe('balance decoding', () => {
-    it('reads the low half when the RPC supplies no high half', async () => {
-      mockSimulateTransaction.mockResolvedValue(mockI128('5000000'));
+  describe('balance', () => {
+    it('sends the account as an Address argument', async () => {
+      contract({ balance: returns(i128(5_000_000n)) });
       await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).resolves.toBe(5_000_000n);
+
+      expect(invocation(simulate.mock.calls[0][0])).toEqual({
+        fn: 'balance',
+        argTypes: ['scvAddress'],
+        args: [ADDRESS],
+      });
     });
 
-    it('includes the high half instead of truncating to 64 bits', async () => {
-      // 2^64 + 1. The previous decoder reported 1n for this.
-      mockSimulateTransaction.mockResolvedValue(mockI128('1', '1'));
-      await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).resolves.toBe((1n << 64n) + 1n);
+    it.each([
+      ['a balance below 2^64', 5_000_000n],
+      ['2^64 + 5, which needs the high half', (1n << 64n) + 5n],
+      ['2^64 - 1, an all-ones low half', (1n << 64n) - 1n],
+      ['the largest i128', (1n << 127n) - 1n],
+    ])('decodes %s exactly', async (_label, amount) => {
+      contract({ balance: returns(i128(amount)) });
+      await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).resolves.toBe(amount);
     });
 
-    it('treats the low half as unsigned', async () => {
-      // XDR reports the bottom 64 bits as a signed int64, so -1 means all ones.
-      mockSimulateTransaction.mockResolvedValue(mockI128('-1', '0'));
-      await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).resolves.toBe((1n << 64n) - 1n);
-    });
-
-    it('throws on an undecodable response rather than reporting a zero balance', async () => {
-      mockSimulateTransaction.mockResolvedValue({ result: { retval: { u32: () => 5 } } });
-      await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).rejects.toThrow('not an i128');
-    });
-
-    it('throws on a non-integer balance component', async () => {
-      mockSimulateTransaction.mockResolvedValue(mockI128('not-a-number'));
+    it('throws on a wrong-typed response rather than reporting a zero balance', async () => {
+      contract({ balance: returns(u32(5)) });
       await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).rejects.toThrow(
-        'non-integer balance component',
+        'expected scvI128, got scvU32',
       );
+    });
+
+    it('throws on a void response rather than reporting a zero balance', async () => {
+      contract({ balance: returns(xdr.ScVal.scvVoid()) });
+      await expect(getAssetBalance(CONTRACT, ADDRESS, 'testnet')).rejects.toThrow(
+        'returned no result',
+      );
+    });
+
+    it('rejects an address with a bad checksum before calling the RPC', async () => {
+      const badChecksum = `${ADDRESS.slice(0, -1)}G`;
+      await expect(getAssetBalance(CONTRACT, badChecksum, 'testnet')).rejects.toThrow(
+        'Invalid Stellar address',
+      );
+      expect(simulate).not.toHaveBeenCalled();
     });
   });
 });
