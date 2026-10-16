@@ -316,6 +316,19 @@ export class RetentionExceededError extends WraithNetworkError {
     describe(): string;
 }
 
+// @public
+export class RPCAbortedError extends WraithNetworkError {
+    constructor(url: string, options?: {
+        cause?: unknown;
+    });
+    // (undocumented)
+    readonly code = "WRAITH/NETWORK/RPC_ABORTED";
+    // (undocumented)
+    describe(): string;
+    // (undocumented)
+    readonly url: string;
+}
+
 // @public (undocumented)
 export class RPCRequestError extends WraithNetworkError {
     constructor(url: string, statusCode: number, responseText?: string);

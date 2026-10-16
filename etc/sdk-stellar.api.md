@@ -167,8 +167,8 @@ export interface BuildBatchSendTxResult {
 // @public
 export function buildMultisigStealthWithdraw(options: BuildMultisigStealthWithdrawOptions): Promise<Transaction>;
 
-// @public (undocumented)
-export interface BuildMultisigStealthWithdrawOptions {
+// @public
+export interface BuildMultisigStealthWithdrawOptions extends HorizonCallOptions {
     account?: Pick<Horizon.ServerApi.AccountRecord, 'sequence' | 'thresholds' | 'signers'>;
     destination: string;
     fee?: string;
@@ -382,7 +382,7 @@ export function fetchAnnouncementsStream(chain?: string, sorobanUrlOrOpts?: stri
 export function findStrictReceivePath(options: FindStrictReceivePathOptions): Promise<StrictReceivePathResult>;
 
 // @public
-export interface FindStrictReceivePathOptions {
+export interface FindStrictReceivePathOptions extends HorizonCallOptions {
     chain?: string;
     destAmount: string;
     horizonUrl?: string;
@@ -449,6 +449,12 @@ export type HexString = `0x${string}`;
 
 // @public
 export function hexToBytes(hex: string): Uint8Array;
+
+// @public
+export interface HorizonCallOptions {
+    signal?: AbortSignal;
+    timeouts?: RequestTimeouts;
+}
 
 // @public (undocumented)
 export interface HorizonClient {
