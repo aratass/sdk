@@ -70,10 +70,10 @@ export class AttemptDeadline {
   private readonly controller =
     typeof AbortController === 'function' ? new AbortController() : undefined;
   private readonly expiry: Promise<never>;
-  private rejectExpiry!: (error: RPCTimeoutError) => void;
+  private rejectExpiry!: (error: Error) => void;
   private connectTimer: ReturnType<typeof setTimeout> | undefined;
   private requestTimer: ReturnType<typeof setTimeout> | undefined;
-  private timeoutError: RPCTimeoutError | undefined;
+  private failure: Error | undefined;
 
   constructor(
     timeouts: ResolvedTimeouts,
@@ -108,6 +108,16 @@ export class AttemptDeadline {
     return this.race(() => body);
   }
 
+  /**
+   * Ends the attempt early with `error`, for example when the caller's `AbortSignal` fires. The
+   * fetch is aborted and a pending {@link AttemptDeadline.send} or {@link AttemptDeadline.read}
+   * rejects with `error`. Does nothing once the attempt has already failed.
+   */
+  abort(error: Error): void {
+    if (this.failure) return;
+    this.fail(error);
+  }
+
   /** Clears the timers. Safe to call more than once. */
   dispose(): void {
     clearTimeout(this.connectTimer);
@@ -121,15 +131,19 @@ export class AttemptDeadline {
       return await Promise.race([start(), this.expiry]);
     } catch (err) {
       // An aborted fetch rejects with whatever its implementation picks, usually a DOMException
-      // named `AbortError`. Report the timeout that caused the abort instead.
-      throw this.timeoutError ?? err;
+      // named `AbortError`. Report the timeout or caller abort that caused it instead.
+      throw this.failure ?? err;
     }
   }
 
   private expire(phase: RPCTimeoutPhase, timeoutMs: number): void {
+    if (this.failure) return;
+    this.fail(new RPCTimeoutError({ ...this.target, phase, timeoutMs }));
+  }
+
+  private fail(error: Error): void {
     this.dispose();
-    const error = new RPCTimeoutError({ ...this.target, phase, timeoutMs });
-    this.timeoutError = error;
+    this.failure = error;
     this.rejectExpiry(error);
     this.controller?.abort(error);
   }

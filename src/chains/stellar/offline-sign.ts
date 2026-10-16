@@ -1,7 +1,15 @@
 import { TransactionBuilder, Account, Keypair, xdr } from '@stellar/stellar-sdk';
 import { getDeployment } from './deployments';
 import { signWithScalar } from './scalar';
-import { RPCRequestError, InvalidSignatureError } from '../../errors';
+import { requestHorizonJson, type HorizonCallOptions } from './request';
+import type { RequestTimeouts } from './timeouts';
+import { HorizonResponseError, InvalidSignatureError } from '../../errors';
+
+/**
+ * Default timeouts for a submission. Horizon answers only once the transaction is in a ledger or
+ * its own wait runs out, so the headers can take as long as the whole request.
+ */
+const SUBMIT_TIMEOUTS: RequestTimeouts = { connectMs: 0, requestMs: 60_000 };
 
 export interface OfflineSignParams {
   /** Stellar account public key (G...) of the transaction source. */
@@ -169,10 +177,21 @@ export function signOfflineStellarTransaction(
  * parsed Horizon response, which includes the transaction hash, ledger
  * sequence, and result envelope on success.
  *
+ * Horizon answers only once the transaction is in a ledger or its own wait
+ * runs out, so by default there is no separate headers timeout and the whole
+ * request may take 60 s. A submission that times out or is aborted may still
+ * be applied: look the transaction up by its hash before submitting it again.
+ *
  * @param signedXdr - Base64-encoded signed transaction envelope XDR.
  * @param network - Chain deployment key (default: `"stellar"`).
+ * @param options - Cancellation signal and timeouts. `timeouts` defaults to
+ *   `{ connectMs: 0, requestMs: 60000 }`.
  * @returns Parsed Horizon response JSON.
- * @throws {RPCRequestError} If the Horizon submission fails.
+ * @throws {RPCAbortedError} If `options.signal` aborts the submission.
+ * @throws {RPCTimeoutError} If Horizon does not answer within `options.timeouts`.
+ * @throws {RPCRequestError} If the Horizon submission fails; the Horizon error
+ *   body, with its result codes, is on `context.responseText`.
+ * @throws {HorizonResponseError} If Horizon's success response is not a JSON object.
  * @throws {Error} If `signedXdr` is empty or invalid.
  *
  * @example
@@ -187,25 +206,30 @@ export function signOfflineStellarTransaction(
 export async function submitOfflineStellarTransaction(
   signedXdr: string,
   network: string = 'stellar',
+  options: HorizonCallOptions = {},
 ): Promise<Record<string, unknown>> {
   if (!signedXdr || typeof signedXdr !== 'string') {
     throw new Error('signedXdr must be a non-empty base64 string');
   }
 
   const deployment = getDeployment(network);
-  const horizonUrl = deployment.horizonUrl;
+  const endpoint = deployment.horizonUrl.replace(/\/$/, '');
+  const url = `${endpoint}/transactions`;
 
-  const res = await fetch(`${horizonUrl}/transactions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ tx: signedXdr }),
+  const data = await requestHorizonJson({
+    url,
+    endpoint,
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ tx: signedXdr }),
+    },
+    signal: options.signal,
+    timeouts: [SUBMIT_TIMEOUTS, options.timeouts],
   });
 
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new RPCRequestError(horizonUrl, res.status, JSON.stringify(data));
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new HorizonResponseError(url, 'body', 'not a JSON object');
   }
-
-  return data;
+  return data as Record<string, unknown>;
 }

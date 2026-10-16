@@ -15,7 +15,8 @@ import { decodeStealthMetaAddress } from './meta-address';
 import { getDeployment } from './deployments';
 import type { GeneratedStealthAddress } from './types';
 import { AttemptDeadline, resolveTimeouts } from './timeouts';
-import { HorizonResponseError, RPCRequestError } from '../../errors';
+import type { HorizonCallOptions } from './request';
+import { HorizonResponseError, RPCAbortedError, RPCRequestError } from '../../errors';
 
 /**
  * Options for {@link buildPathStealthPayment}.
@@ -323,7 +324,7 @@ function parseHorizonAsset(
 /**
  * Options for {@link findStrictReceivePath}.
  */
-export interface FindStrictReceivePathOptions {
+export interface FindStrictReceivePathOptions extends HorizonCallOptions {
   /** The asset the sender is spending. */
   sendAsset: Asset;
   /** The asset the stealth address should receive. */
@@ -357,8 +358,13 @@ export interface StrictReceivePathResult {
  * `sendAsset` to exactly `destAmount` of `receiveAsset`), and the one with the smallest
  * `source_amount` is returned.
  *
+ * Pass `signal` to cancel the lookup and `timeouts` to override the connect and request timeouts,
+ * which default to those of the SDK's Horizon client.
+ *
  * @param options See {@link FindStrictReceivePathOptions}.
  * @returns The source amount and path for the cheapest swap route.
+ * @throws {RPCAbortedError} If `options.signal` aborts the lookup.
+ * @throws {RPCTimeoutError} If Horizon does not answer within `options.timeouts`.
  * @throws {RPCRequestError} If Horizon answers with a non-2xx status.
  * @throws {HorizonResponseError} If the response is oversized, is not valid JSON, or a record
  * fails validation.
@@ -400,7 +406,7 @@ export interface StrictReceivePathResult {
 export async function findStrictReceivePath(
   options: FindStrictReceivePathOptions,
 ): Promise<StrictReceivePathResult> {
-  const { sendAsset, receiveAsset, destAmount, horizonUrl, chain = 'stellar' } = options;
+  const { sendAsset, receiveAsset, destAmount, horizonUrl, chain = 'stellar', signal } = options;
 
   const wantedStroops = toStroops(destAmount);
   if (wantedStroops === null) {
@@ -427,9 +433,18 @@ export async function findStrictReceivePath(
 
   const invalid = (field: string, reason: string) => new HorizonResponseError(url, field, reason);
 
-  // Same connect / request timeouts as the SDK's Horizon client, so a server that never answers
-  // or trickles the body cannot hang the call.
-  const deadline = new AttemptDeadline(resolveTimeouts(), { url, endpoint: baseUrl, attempt: 1 });
+  const aborted = () => new RPCAbortedError(url, { cause: signal?.reason });
+  if (signal?.aborted) throw aborted();
+
+  // Same connect / request timeouts as the SDK's Horizon client unless the caller overrides them,
+  // so a server that never answers or trickles the body cannot hang the call.
+  const deadline = new AttemptDeadline(resolveTimeouts(options.timeouts), {
+    url,
+    endpoint: baseUrl,
+    attempt: 1,
+  });
+  const onAbort = () => deadline.abort(aborted());
+  signal?.addEventListener('abort', onAbort);
   let body: string;
   try {
     const response = await deadline.send(fetch, url, {});
@@ -437,7 +452,10 @@ export async function findStrictReceivePath(
       // The status is what matters; a body that fails to arrive must not hide it.
       const { text } = await deadline
         .read(readCapped(response, MAX_ERROR_BODY_BYTES))
-        .catch(() => ({ text: '' }));
+        .catch((err: unknown) => {
+          if (err instanceof RPCAbortedError) throw err;
+          return { text: '' };
+        });
       throw new RPCRequestError(url, response.status, text.slice(0, 500));
     }
     const declaredLength = Number(response.headers.get('content-length'));
@@ -451,6 +469,7 @@ export async function findStrictReceivePath(
     }
     body = read.text;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     deadline.dispose();
   }
 

@@ -6,6 +6,8 @@ import {
   TransactionBuilder,
   type Horizon,
 } from '@stellar/stellar-sdk';
+import { HorizonResponseError } from '../../errors';
+import { requestHorizonJson, type HorizonCallOptions } from './request';
 
 interface WeightedSigner {
   key: string;
@@ -21,7 +23,12 @@ interface AccountConfig {
   signers: WeightedSigner[];
 }
 
-export interface BuildMultisigStealthWithdrawOptions {
+/**
+ * Options for {@link buildMultisigStealthWithdraw}. `signal` and `timeouts` apply to the Horizon
+ * account lookup made when only `horizonUrl` is supplied; `timeouts` defaults to 10 s for the
+ * response headers and 30 s in total.
+ */
+export interface BuildMultisigStealthWithdrawOptions extends HorizonCallOptions {
   /** Stealth source account to close. */
   stealthAddress: string;
   /** Destination that receives the stealth account's remaining native balance. */
@@ -40,7 +47,7 @@ export interface BuildMultisigStealthWithdrawOptions {
   horizonUrl?: string;
   /** Base fee in stroops. Defaults to 100. */
   fee?: string;
-  /** Transaction timeout in seconds. Defaults to 180. */
+  /** Transaction validity window in seconds. Defaults to 180. Not a network timeout. */
   timeout?: number;
 }
 
@@ -58,6 +65,11 @@ const txState = new WeakMap<Transaction, MultisigState>();
  * configured signer weights when `account` or `horizonUrl` is supplied. The
  * resulting transaction closes the stealth account and sends its native XLM
  * balance to `destination`.
+ *
+ * @throws {RPCAbortedError} If `options.signal` aborts the account lookup.
+ * @throws {RPCTimeoutError} If Horizon does not answer within `options.timeouts`.
+ * @throws {RPCRequestError} If the account lookup returns a non-2xx status.
+ * @throws {HorizonResponseError} If the account record lacks its sequence, thresholds or signers.
  */
 export async function buildMultisigStealthWithdraw(
   options: BuildMultisigStealthWithdrawOptions,
@@ -156,18 +168,39 @@ async function resolveAccountConfig(
     return null;
   }
 
-  const res = await fetch(
-    `${options.horizonUrl.replace(/\/$/, '')}/accounts/${options.stealthAddress}`,
-  );
-  if (!res.ok) {
-    throw new Error(`Horizon account lookup failed: ${res.status} ${res.statusText}`);
-  }
-  return accountRecordToConfig((await res.json()) as Horizon.ServerApi.AccountRecord);
+  const endpoint = options.horizonUrl.replace(/\/$/, '');
+  const url = `${endpoint}/accounts/${options.stealthAddress}`;
+  const record = await requestHorizonJson({
+    url,
+    endpoint,
+    signal: options.signal,
+    timeouts: [options.timeouts],
+  });
+  return accountRecordToConfig(parseAccountRecord(record, url));
 }
 
-function accountRecordToConfig(
-  account: Pick<Horizon.ServerApi.AccountRecord, 'sequence' | 'thresholds' | 'signers'>,
-): AccountConfig {
+type AccountFields = Pick<Horizon.ServerApi.AccountRecord, 'sequence' | 'thresholds' | 'signers'>;
+
+function parseAccountRecord(record: unknown, url: string): AccountFields {
+  const account = record as Partial<AccountFields> | null;
+  if (!account || typeof account !== 'object' || typeof account.sequence !== 'string') {
+    throw new HorizonResponseError(url, 'sequence', 'missing or not a string');
+  }
+  if (!account.thresholds || typeof account.thresholds !== 'object') {
+    throw new HorizonResponseError(url, 'thresholds', 'missing or not an object');
+  }
+  const signersValid =
+    Array.isArray(account.signers) &&
+    account.signers.every(
+      (signer) => typeof signer?.key === 'string' && typeof signer.weight === 'number',
+    );
+  if (!signersValid) {
+    throw new HorizonResponseError(url, 'signers', 'missing or not a list of { key, weight }');
+  }
+  return account as AccountFields;
+}
+
+function accountRecordToConfig(account: AccountFields): AccountConfig {
   return {
     sequence: account.sequence,
     thresholds: account.thresholds,

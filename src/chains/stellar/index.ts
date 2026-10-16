@@ -159,3 +159,4 @@ export type {
 export { createRpcClient } from './rpc';
 export type { RpcClient, RpcClientConfig, RpcEndpoint, RpcRequestOptions } from './rpc';
 export type { RequestTimeouts } from './timeouts';
+export type { HorizonCallOptions } from './request';

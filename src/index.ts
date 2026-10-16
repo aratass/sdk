@@ -66,6 +66,7 @@ export {
   HorizonResponseError,
   RPCRetryExhaustedError,
   RPCTimeoutError,
+  RPCAbortedError,
   RetentionExceededError,
   NameNotFoundError,
   NameAlreadyRegisteredError,

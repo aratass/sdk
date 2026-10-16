@@ -379,6 +379,40 @@ export class RPCTimeoutError extends WraithNetworkError implements RPCTimeoutDet
   }
 }
 
+/**
+ * Thrown when the caller's `AbortSignal` cancels a Horizon request before it completes. The
+ * signal's `reason` is kept on `cause`, so `error.cause` still tells an explicit
+ * `controller.abort(reason)` apart from a plain abort.
+ */
+export class RPCAbortedError extends WraithNetworkError {
+  readonly code = 'WRAITH/NETWORK/RPC_ABORTED';
+  readonly url: string;
+
+  /**
+   * @param options - `cause` is the abort signal's `reason`. Exposed as `error.cause` and left out
+   * of `toJSON()`.
+   */
+  constructor(url: string, options?: { cause?: unknown }) {
+    super(`RPC request to "${url}" was aborted by the caller`, { url });
+    this.url = url;
+    if (options?.cause !== undefined) {
+      Object.defineProperty(this, 'cause', {
+        value: options.cause,
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
+
+  describe(): string {
+    const { url } = this.context ?? {};
+    return (
+      `The request to "${url}" was cancelled through its AbortSignal before it finished. Try: ` +
+      `nothing, if the abort was intended; otherwise check what aborted the signal. See ${this.docsLink}.`
+    );
+  }
+}
+
 export class RetentionExceededError extends WraithNetworkError {
   readonly code = 'WRAITH/NETWORK/RETENTION_EXCEEDED';
 

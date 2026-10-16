@@ -17,6 +17,7 @@ import {
   HorizonResponseError,
   RPCRetryExhaustedError,
   RPCTimeoutError,
+  RPCAbortedError,
   RetentionExceededError,
   NameNotFoundError,
   NameAlreadyRegisteredError,
@@ -206,6 +207,27 @@ describe('Wraith Custom Errors Taxonomy', () => {
     expect(error.toJSON().context).toEqual(error.context);
   });
 
+  test('RPCAbortedError instanceof checks', () => {
+    const reason = new Error('component unmounted');
+    const error = new RPCAbortedError('https://horizon.stellar.org/transactions', {
+      cause: reason,
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(WraithError);
+    expect(error).toBeInstanceOf(WraithNetworkError);
+    expect(error).toBeInstanceOf(RPCAbortedError);
+    expect(error.code).toBe('WRAITH/NETWORK/RPC_ABORTED');
+    expect(error.name).toBe('RPCAbortedError');
+    expect(error.url).toBe('https://horizon.stellar.org/transactions');
+    expect(error.context).toEqual({ url: 'https://horizon.stellar.org/transactions' });
+    expect(error.docsLink).toBe('https://docs.wraith.dev/sdk/errors#rpcaborted');
+    expect(error.message).toContain('was aborted by the caller');
+    expect(error.cause).toBe(reason);
+    expect(Object.keys(error)).not.toContain('cause');
+    expect(JSON.parse(JSON.stringify(error))).not.toHaveProperty('cause');
+    expect('cause' in new RPCAbortedError('https://horizon.stellar.org')).toBe(false);
+  });
+
   test('RetentionExceededError instanceof checks', () => {
     const error = new RetentionExceededError(100, 105);
     expect(error).toBeInstanceOf(Error);
@@ -329,6 +351,7 @@ describe('Wraith Custom Errors Taxonomy', () => {
           timeoutMs: 10_000,
         }),
       ],
+      ['RPCAbortedError', new RPCAbortedError('https://horizon.stellar.org/transactions')],
       ['RetentionExceededError', new RetentionExceededError(100, 105)],
       ['NameNotFoundError', new NameNotFoundError('missing.wraith')],
       [
