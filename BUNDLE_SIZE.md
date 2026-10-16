@@ -21,7 +21,7 @@ Every budget is the measured baseline **+ 15% headroom**, rounded up.
 | `./chains/ckb`     | CJS (`require`)  | 128.76 KB | 148.1 KB      |
 | `./vault`          | ESM (`import *`) | 1.93 KB   | 2.3 KB        |
 | `./vault`          | CJS (`require`)  | 2.07 KB   | 2.4 KB        |
-| `./chains/stellar` | ESM (`import *`) | 26.48 KB  | 30.5 KB       |
+| `./chains/stellar` | ESM (`import *`) | 26.48 KB  | 31 KB         |
 | `./chains/stellar` | CJS (`require`)  | 34.29 KB  | 39.5 KB       |
 
 > Stellar note: the original 20 KB-per-format budget predated any actual
@@ -29,6 +29,10 @@ Every budget is the measured baseline **+ 15% headroom**, rounded up.
 > bundle exceeds 20 KB, so its budget was re-baselined on 2026-08-29 using
 > the same baseline + 15% rule as the other entries. Entry paths and options
 > are unchanged.
+>
+> On 2026-10-16 the Stellar ESM budget was raised from 30.5 KB to 31 KB for the
+> cancellation and timeout support in the one-shot Horizon helpers (issue #235),
+> which brought that entry to 30.68 KB.
 
 ## Checking Sizes (CI gate)
 
