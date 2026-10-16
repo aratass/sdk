@@ -94,7 +94,9 @@ console.log('Transaction hash:', result.hash);
 console.log('Ledger:', result.ledger);
 ```
 
-The function resolves the Horizon URL from the chain deployment config (`getDeployment('stellar')`) and POSTs the XDR to `/transactions`. On failure it throws an `RPCRequestError` with the Horizon response body.
+The function resolves the Horizon URL from the chain deployment config (`getDeployment('stellar')`) and POSTs the XDR to `/transactions`. On failure it throws an `RPCRequestError` with the Horizon response body on `context.responseText`.
+
+A third argument takes an `AbortSignal` and timeouts: `submitOfflineStellarTransaction(signedXdr, 'stellar', { signal, timeouts })`. By default there is no headers timeout and the request gives up after 60 s, because Horizon answers only once the transaction is in a ledger. An aborted or timed-out submission rejects with `RPCAbortedError` or `RPCTimeoutError` and may still be applied, so look the transaction up by its hash before submitting it again.
 
 ## Stealth Address Compatibility
 

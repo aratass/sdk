@@ -6,6 +6,9 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
 
 ### Added
 
+- **Cancellation and Timeouts for the Remaining Stellar Network Helpers** (issue #235): `findStrictReceivePath()`, `buildMultisigStealthWithdraw()` and `submitOfflineStellarTransaction()` accept `signal` and `timeouts`, like the Horizon and RPC clients.
+  - Defaults: 10 s for the headers and 30 s in total for path finding and the account lookup; no headers timeout and 60 s in total for transaction submission, since Horizon answers a submission only once the transaction is in a ledger.
+  - New `RPCAbortedError` (`WRAITH/NETWORK/RPC_ABORTED`), exported from the package root, with the signal's `reason` on `cause`. A non-2xx status is an `RPCRequestError`, a timeout an `RPCTimeoutError` and an invalid response a `HorizonResponseError`. See [`docs/chains/stellar-request-timeouts.md`](./docs/chains/stellar-request-timeouts.md).
 - **Supported Runtime and Peer Dependency Matrix** (issue #209): `compat/matrix.json` is now the single source of truth for the runtimes the SDK supports — Node.js, Bun, evergreen browsers and React Native — and for the dependency ranges it accepts (`@stellar/stellar-sdk`, `@solana/web3.js`, `viem`).
   - [`COMPAT.md`](./COMPAT.md) is generated from that file and documents the unsupported combinations alongside the exact failure message each one produces.
   - `pnpm test:compat` validates the matrix against `package.json` and `COMPAT.md`, imports every entry point on the running runtime, repeats that against a simulated React Native global scope, bundles every entry point for `platform: browser`, imports every entry point from an install with the optional peers removed, and asserts the npm tarball contains every file the `exports` map points at.
@@ -50,6 +53,7 @@ All notable changes to the Wraith Protocol SDK will be documented in this file.
 
 ### Changed
 
+- **Stellar Helper Errors Use the Taxonomy** (issue #235): for a non-2xx Horizon status, `buildMultisigStealthWithdraw()` throws `RPCRequestError` instead of a plain `Error`, and an account record without its sequence, thresholds or signers throws `HorizonResponseError`. `submitOfflineStellarTransaction()` reports the full `/transactions` URL on `RPCRequestError`, throws `HorizonResponseError` for a success body that is not a JSON object, and gives up after 60 s by default; pass `{ timeouts: { requestMs: 0 } }` for the old behaviour.
 - **Stellar Horizon and RPC Clients Time Out by Default** (issue #202): an attempt now fails after 10 s without response headers or 30 s in total, then retries or fails over, instead of waiting indefinitely. Pass `timeouts: { connectMs: 0, requestMs: 0 }` for the old behaviour, or longer values for slow calls such as Horizon transaction submission.
 - **Stellar Chain Module Cryptographic Audit Fixes**: Applied all findings from independent cryptographic audit (issue #55). Breaking changes:
   - `scanAnnouncements()` now skips candidates with zero derived scalars (cryptographically required, probability ~1 in 2^255).

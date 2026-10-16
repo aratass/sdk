@@ -26,6 +26,7 @@ WraithError (Abstract Base)
 │   ├── HorizonResponseError
 │   ├── RPCRetryExhaustedError
 │   ├── RPCTimeoutError
+│   ├── RPCAbortedError
 │   └── RetentionExceededError
 ├── WraithContractError
 │   ├── NameNotFoundError
@@ -85,6 +86,7 @@ Thrown when HTTP queries to Wraith APIs, Horizon/Soroban endpoints, Solana clust
 | `HorizonResponseError`   | `"WRAITH/NETWORK/HORIZON_RESPONSE"`    | `url`, `field`, `reason`                           | Thrown when Horizon answers 2xx but the body is oversized, malformed, or does not match the request. |
 | `RPCRetryExhaustedError` | `"WRAITH/NETWORK/RPC_RETRY_EXHAUSTED"` | `url`, `attempts`, `lastError`                     | Thrown when all query retry strategies have timed out or failed.                                     |
 | `RPCTimeoutError`        | `"WRAITH/NETWORK/RPC_TIMEOUT"`         | `url`, `endpoint`, `attempt`, `phase`, `timeoutMs` | Thrown when a Horizon/Soroban attempt exceeds its connect or request timeout.                        |
+| `RPCAbortedError`        | `"WRAITH/NETWORK/RPC_ABORTED"`         | `url`                                              | Thrown when the caller's `AbortSignal` cancels a Horizon request; the signal's reason is on `cause`. |
 | `RetentionExceededError` | `"WRAITH/NETWORK/RETENTION_EXCEEDED"`  | `limit`, `actual`                                  | Thrown when querying historical logs beyond maximum retention boundaries.                            |
 
 When the Horizon or Soroban RPC client gives up, `RPCRetryExhaustedError.cause` holds the last attempt's error, such as an `RPCTimeoutError`. See [Stellar Horizon and RPC request timeouts](./chains/stellar-request-timeouts.md).

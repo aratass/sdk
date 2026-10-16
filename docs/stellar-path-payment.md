@@ -73,13 +73,15 @@ const { sourceAmount, path } = await findStrictReceivePath(options);
 
 #### Parameters
 
-| Field          | Type     | Required | Description                                        |
-| -------------- | -------- | -------- | -------------------------------------------------- |
-| `sendAsset`    | `Asset`  | ✅       | Asset the sender is spending                       |
-| `receiveAsset` | `Asset`  | ✅       | Asset the stealth address should receive           |
-| `destAmount`   | `string` | ✅       | Exact amount of `receiveAsset` desired             |
-| `horizonUrl`   | `string` | ❌       | Custom Horizon URL (default: deployment's Horizon) |
-| `chain`        | `string` | ❌       | Chain deployment key (default: `"stellar"`)        |
+| Field          | Type              | Required | Description                                                                                      |
+| -------------- | ----------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `sendAsset`    | `Asset`           | ✅       | Asset the sender is spending                                                                     |
+| `receiveAsset` | `Asset`           | ✅       | Asset the stealth address should receive                                                         |
+| `destAmount`   | `string`          | ✅       | Exact amount of `receiveAsset` desired                                                           |
+| `horizonUrl`   | `string`          | ❌       | Custom Horizon URL (default: deployment's Horizon)                                               |
+| `chain`        | `string`          | ❌       | Chain deployment key (default: `"stellar"`)                                                      |
+| `signal`       | `AbortSignal`     | ❌       | Cancels the Horizon request; the call then rejects with `RPCAbortedError`                        |
+| `timeouts`     | `RequestTimeouts` | ❌       | Connect and request timeouts (default: the Horizon client's 10 s for the headers, 30 s in total) |
 
 #### Return value
 
@@ -103,7 +105,7 @@ Horizon returns every path in one `_embedded.records` page; this endpoint is not
 
 The record with the smallest `source_amount` is returned. If any record fails a check, the whole response is rejected with `HorizonResponseError`.
 
-`destAmount` must itself be a positive amount with at most 7 decimals; anything else throws before Horizon is called. The request uses the same timeouts as the SDK's Horizon client (10 s for the response headers, 30 s in total) and throws `RPCTimeoutError` when one fires.
+`destAmount` must itself be a positive amount with at most 7 decimals; anything else throws before Horizon is called. By default the request uses the same timeouts as the SDK's Horizon client (10 s for the response headers, 30 s in total); `timeouts` overrides either one, and `RPCTimeoutError` is thrown when one fires. Aborting `signal`, before or during the request, rejects with `RPCAbortedError`, with the signal's `reason` on `cause`.
 
 ---
 
@@ -284,12 +286,13 @@ The recipient can claim the balance once they detect the announcement and derive
 
 `findStrictReceivePath` throws:
 
-| Error                  | When                                                                                                           |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `RPCRequestError`      | Horizon answers with a non-2xx status (`statusCode` and the start of the body are on the error).               |
-| `HorizonResponseError` | The response is too large, is not JSON, or a record fails validation. `error.field` names the rejected value.  |
-| `RPCTimeoutError`      | Horizon sends no headers within 10 s, or the whole request takes longer than 30 s.                             |
-| `Error`                | Horizon returns no path for the asset pair and amount, or `destAmount` is invalid (thrown before the request). |
+| Error                  | When                                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `RPCRequestError`      | Horizon answers with a non-2xx status (`statusCode` and the start of the body are on the error).                 |
+| `HorizonResponseError` | The response is too large, is not JSON, or a record fails validation. `error.field` names the rejected value.    |
+| `RPCTimeoutError`      | Horizon sends no headers within 10 s, or the whole request takes longer than 30 s (or the limits in `timeouts`). |
+| `RPCAbortedError`      | `signal` aborts before or during the request. The signal's `reason` is on `cause`.                               |
+| `Error`                | Horizon returns no path for the asset pair and amount, or `destAmount` is invalid (thrown before the request).   |
 
 ### No payment path found
 

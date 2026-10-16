@@ -74,3 +74,51 @@ try {
 ```
 
 `cause` is not enumerable and is left out of `toJSON()`, the same as on the wallet errors.
+
+## One-shot Horizon helpers
+
+`findStrictReceivePath()`, `buildMultisigStealthWithdraw()` (when it loads the account from
+`horizonUrl`) and `submitOfflineStellarTransaction()` each make one Horizon request, with no
+retries. They take the same `timeouts` shape plus an `AbortSignal`.
+
+| Helper                                                   | Options                              | Default `timeouts`                       |
+| :------------------------------------------------------- | :----------------------------------- | :--------------------------------------- |
+| `findStrictReceivePath(options)`                         | `options.signal`, `options.timeouts` | `{ connectMs: 10000, requestMs: 30000 }` |
+| `buildMultisigStealthWithdraw(options)`                  | `options.signal`, `options.timeouts` | `{ connectMs: 10000, requestMs: 30000 }` |
+| `submitOfflineStellarTransaction(xdr, network, options)` | `options.signal`, `options.timeouts` | `{ connectMs: 0, requestMs: 60000 }`     |
+
+Horizon answers a submission only once the transaction is in a ledger or its own wait runs out,
+so a submission has no separate headers timeout by default.
+
+```ts
+import {
+  findStrictReceivePath,
+  submitOfflineStellarTransaction,
+} from '@wraith-protocol/sdk/chains/stellar';
+
+const controller = new AbortController();
+
+const { sourceAmount, path } = await findStrictReceivePath({
+  sendAsset,
+  receiveAsset,
+  destAmount: '100',
+  signal: controller.signal,
+  timeouts: { requestMs: 5_000 },
+});
+
+const result = await submitOfflineStellarTransaction(signedXdr, 'stellar', {
+  signal: controller.signal,
+});
+```
+
+Every failure maps onto the error taxonomy:
+
+| Failure                                                          | Error                                                                                        |
+| :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------- |
+| The signal is aborted, before or during the request              | `RPCAbortedError` (`WRAITH/NETWORK/RPC_ABORTED`), with the signal's `reason` on `cause`      |
+| A timeout fires                                                  | `RPCTimeoutError` (`WRAITH/NETWORK/RPC_TIMEOUT`), with `attempt: 1`                          |
+| Horizon answers with a non-2xx status                            | `RPCRequestError` (`WRAITH/NETWORK/RPC_REQUEST`), with the body on `context.responseText`    |
+| A success response is not JSON, is oversized or fails validation | `HorizonResponseError` (`WRAITH/NETWORK/HORIZON_RESPONSE`), with the failing part on `field` |
+
+A submission that times out or is aborted may still be applied. Look the transaction up by its
+hash before submitting it again.
