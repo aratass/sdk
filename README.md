@@ -210,7 +210,7 @@ import {
   decodeStealthMetaAddress,
   fetchAnnouncements,
   RetentionExceededError,
-  SCHEME_ID,
+  ACTIVE_SCHEME_ID,
   bytesToHex,
 } from '@wraith-protocol/sdk/chains/stellar';
 
