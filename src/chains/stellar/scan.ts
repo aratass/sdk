@@ -466,9 +466,14 @@ export function scanAnnouncements(
 /**
  * Pre-optimization scanner retained for benchmarks and migration analysis.
  *
- * This matches the old Stellar path: every v1 or v2 announcement pays for
- * X25519 first, computes the legacy shared-secret tag second, and only then
- * compares the announced stealth address.
+ * This matches the old Stellar path: every v1 announcement pays for X25519
+ * first, computes the legacy shared-secret tag second, and only then compares
+ * the announced stealth address.
+ *
+ * It reads {@link SCHEME_ID_V1} announcements only. Scheme 2 announcements carry
+ * the public view tag from {@link computeAnnouncementViewTag}, which this path
+ * never computes, so it skips them; scan those with {@link scanAnnouncements}
+ * or {@link scanAnnouncementsStream}.
  */
 export function scanAnnouncementsLegacySharedSecretTag(
   announcements: Announcement[],
@@ -479,7 +484,7 @@ export function scanAnnouncementsLegacySharedSecretTag(
   const matched: MatchedAnnouncement[] = [];
 
   for (const ann of announcements) {
-    if (ann.schemeId !== SCHEME_ID_V1 && ann.schemeId !== SCHEME_ID_V2) continue;
+    if (ann.schemeId !== SCHEME_ID_V1) continue;
 
     const metadataBytes = hexToBytes(ann.metadata);
     if (metadataBytes.length === 0) continue;

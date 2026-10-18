@@ -40,8 +40,9 @@ export const SCHEME_ID_V2 = 2;
  *
  * It is {@link SCHEME_ID_V2}, the only value the deployed v2 announcer accepts
  * (`STELLAR_V2_SCHEME_ID` in wraith-protocol/contracts). The legacy v1 announcer accepts any
- * scheme id, so the same calls also work against a v1 deployment. The scanners accept both
- * {@link SCHEME_ID_V1} and {@link SCHEME_ID_V2}.
+ * scheme id, so the same calls also work against a v1 deployment. `scanAnnouncements()` and
+ * `scanAnnouncementsStream()` accept both {@link SCHEME_ID_V1} and {@link SCHEME_ID_V2};
+ * `scanAnnouncementsLegacySharedSecretTag()` reads v1 only.
  */
 export const ACTIVE_SCHEME_ID = SCHEME_ID_V2;
 

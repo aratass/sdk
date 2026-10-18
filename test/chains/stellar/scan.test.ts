@@ -13,7 +13,8 @@ import {
   scanAnnouncementsStream,
   scanAnnouncementsLegacySharedSecretTag,
 } from '../../../src/chains/stellar/scan';
-import { SCHEME_ID } from '../../../src/chains/stellar/constants';
+import { SCHEME_ID, SCHEME_ID_V1, SCHEME_ID_V2 } from '../../../src/chains/stellar/constants';
+import { buildAnnouncementData } from '../../../src/chains/stellar/tx-builder';
 import { bytesToHex } from '../../../src/chains/stellar/utils';
 import type { Announcement, MatchedAnnouncement } from '../../../src/chains/stellar/types';
 
@@ -596,6 +597,84 @@ function makeRecordingTracer() {
   };
   return { tracer, spanNames };
 }
+
+describe('scheme 2 announcements', () => {
+  const caller = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+  /** A stealth payment whose legacy shared-secret tag differs from its public view tag. */
+  function paymentWithDistinctTags(keys: ReturnType<typeof deriveStealthKeys>) {
+    for (let i = 0; i < 256; i++) {
+      const ephemeralSeed = new Uint8Array(32).fill(0x21 + i);
+      const stealth = generateStealthAddress(
+        keys.spendingPubKey,
+        keys.viewingPubKey,
+        ephemeralSeed,
+      );
+      const legacyTag = computeViewTag(computeSharedSecret(ephemeralSeed, keys.viewingPubKey));
+      if (legacyTag !== stealth.viewTag) return { stealth, legacyTag };
+    }
+    throw new Error('no seed with distinct tags');
+  }
+
+  test('a generated v2 announcement matches in scanAnnouncements and scanAnnouncementsStream', async () => {
+    const keys = deriveStealthKeys(testSig);
+    const { stealth } = paymentWithDistinctTags(keys);
+    const [announcement] = buildAnnouncementData([stealth], caller);
+    expect(announcement.schemeId).toBe(SCHEME_ID_V2);
+
+    const matched = scanAnnouncements(
+      [announcement],
+      keys.viewingKey,
+      keys.spendingPubKey,
+      keys.spendingScalar,
+    );
+    expect(matched).toHaveLength(1);
+    expect(matched[0].stealthAddress).toBe(stealth.stealthAddress);
+    expect(matched[0].schemeId).toBe(SCHEME_ID_V2);
+
+    const streamed = await collectStream(
+      scanAnnouncementsStream(
+        announcementsFrom([announcement]),
+        keys.viewingKey,
+        keys.spendingPubKey,
+        keys.spendingScalar,
+      ),
+    );
+    expect(streamed.map((m) => m.stealthAddress)).toEqual([stealth.stealthAddress]);
+    expect(streamed[0].stealthPrivateScalar).toBe(matched[0].stealthPrivateScalar);
+  });
+
+  test('scanAnnouncementsLegacySharedSecretTag reads v1 only and never claims a scheme 2 announcement', () => {
+    const keys = deriveStealthKeys(testSig);
+    const { stealth, legacyTag } = paymentWithDistinctTags(keys);
+    const legacyV1: Announcement = {
+      schemeId: SCHEME_ID_V1,
+      stealthAddress: stealth.stealthAddress,
+      caller,
+      ephemeralPubKey: bytesToHex(stealth.ephemeralPubKey),
+      metadata: legacyTag.toString(16).padStart(2, '0'),
+    };
+    const scan = (announcements: Announcement[]) =>
+      scanAnnouncementsLegacySharedSecretTag(
+        announcements,
+        keys.viewingKey,
+        keys.spendingPubKey,
+        keys.spendingScalar,
+      );
+
+    // A v1 announcement with the legacy tag still matches on the legacy path.
+    expect(scan([legacyV1]).map((m) => m.stealthAddress)).toEqual([stealth.stealthAddress]);
+    // The same bytes under scheme 2 are not a valid v2 announcement, and the
+    // legacy path must not accept them through the v1 tag algorithm.
+    expect(scan([{ ...legacyV1, schemeId: SCHEME_ID_V2 }])).toHaveLength(0);
+    // A real v2 announcement is skipped here; scanAnnouncements() is the scanner for it.
+    const [v2] = buildAnnouncementData([stealth], caller);
+    expect(scan([v2])).toHaveLength(0);
+    expect(
+      scanAnnouncements([v2], keys.viewingKey, keys.spendingPubKey, keys.spendingScalar),
+    ).toHaveLength(1);
+  });
+});
 
 describe('scanAnnouncementsStream telemetry', () => {
   afterEach(() => {

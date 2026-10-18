@@ -248,7 +248,7 @@ The deployed v2 announcer (`stealth-announcer` in wraith-protocol/contracts) acc
 What it means if you still use the v1 announcer or v1 events:
 
 - **Sending to a v1 announcer still works.** The v1 contract accepts any scheme id, so the same calls succeed. Its events keep the v1 layout `("announce", scheme_id, stealth_address)`, now with `scheme_id = 2`.
-- **The scanners accept both.** `scanAnnouncements()` and the other Stellar scanners keep v1 (`1`) and v2 (`2`) announcements. If your own indexer or filter keeps only `schemeId === 1`, accept `2` as well, or it will miss new payments.
+- **The scanners accept both.** `scanAnnouncements()` and `scanAnnouncementsStream()` keep v1 (`1`) and v2 (`2`) announcements. If your own indexer or filter keeps only `schemeId === 1`, accept `2` as well, or it will miss new payments. The exception is `scanAnnouncementsLegacySharedSecretTag()`, kept for benchmarks: it reads v1 only, because it checks the legacy shared-secret view tag and v2 announcements use the public one (`computeAnnouncementViewTag()`).
 - **Old events are not reinterpreted.** The SDK picks the v1 or v2 parser from the topic layout (3 or 4 topics), not from the scheme id, so historical v1 events stay v1 events.
 - **`SCHEME_ID` is deprecated.** It is still `1`. Use `SCHEME_ID_V1` when you mean the legacy layout and `ACTIVE_SCHEME_ID` when you mean the scheme the SDK emits.
 
